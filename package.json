@@ -1,0 +1,22 @@
+{
+  "name": "agentboxd-repo",
+  "private": true,
+  "description": "Dev tooling for the example agents. The published packages live in sdk/, mcp/ and sdk-python/.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "echo-agent": "tsx examples/echo-agent.ts",
+    "deepseek-agent": "tsx examples/deepseek-agent/index.ts",
+    "test:examples": "vitest run --config examples/deepseek-agent/vitest.config.ts",
+    "typecheck:examples": "tsc --noEmit -p tsconfig.examples.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.1",
+    "zod": "^4.6.5"
+  }
+}

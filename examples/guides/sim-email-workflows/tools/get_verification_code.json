@@ -1,0 +1,21 @@
+{
+  "type": "function",
+  "function": {
+    "name": "get_verification_code",
+    "description": "Wait for a sign-up or login email in the agent's inbox and return its one-time code or magic link. Only use codes for tasks the user gave you.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "since": {
+          "type": "string",
+          "description": "ISO 8601 time recorded just before the form that sends the email was submitted"
+        },
+        "timeout_seconds": {
+          "type": "number",
+          "description": "How long to wait, 1 to 60 seconds (default 30)"
+        }
+      },
+      "required": ["since"]
+    }
+  }
+}

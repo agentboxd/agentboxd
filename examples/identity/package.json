@@ -1,0 +1,22 @@
+{
+  "name": "agentboxd-identity-examples",
+  "private": true,
+  "type": "module",
+  "description": "Sign in with Agentboxd: relying-party examples (Better Auth, Auth.js, headless verification).",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "headless-rp": "tsx headless-rp/server.ts",
+    "agent": "tsx headless-rp/agent.ts"
+  },
+  "dependencies": {
+    "@auth/core": "0.41.3",
+    "agentboxd": "file:../../sdk",
+    "better-auth": "1.7.6",
+    "jose": "6.2.12"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3"
+  }
+}

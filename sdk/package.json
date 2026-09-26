@@ -1,0 +1,105 @@
+{
+  "name": "agentboxd",
+  "version": "0.3.1",
+  "description": "TypeScript client and CLI for Agentboxd: real email inboxes for AI agents. Send, receive, wait for replies, extract OTP codes and magic links, verify webhooks.",
+  "keywords": [
+    "agentboxd",
+    "ai-agents",
+    "agent-email",
+    "cli",
+    "email",
+    "email-api",
+    "inbox",
+    "llm",
+    "mcp",
+    "otp",
+    "verification-code",
+    "magic-link",
+    "webhooks",
+    "temporary-email",
+    "transactional-email",
+    "typescript"
+  ],
+  "homepage": "https://agentboxd.com/docs/typescript-sdk",
+  "bugs": {
+    "url": "https://github.com/agentboxd/agentboxd/issues",
+    "email": "support@agentboxd.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentboxd/agentboxd.git",
+    "directory": "sdk"
+  },
+  "license": "MIT",
+  "author": "Agentboxd <support@agentboxd.com> (https://agentboxd.com)",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/cjs/index.d.ts",
+  "bin": {
+    "agentboxd": "dist/esm/cli/main.js"
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./identity": {
+      "import": {
+        "types": "./dist/esm/identity.d.ts",
+        "default": "./dist/esm/identity.js"
+      },
+      "require": {
+        "types": "./dist/cjs/identity.d.ts",
+        "default": "./dist/cjs/identity.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test test/esm.test.mjs test/cjs.test.cjs test/identity.test.mjs test/cli.test.mjs test/agentMessage.test.mjs test/authorSignature.test.mjs",
+    "prepack": "node scripts/build.mjs",
+    "prepublishOnly": "npm run typecheck && npm run build && npm test",
+    "smoke": "node scripts/smoke-cli.mjs"
+  },
+  "peerDependencies": {
+    "canonicalize": "^2.1.0",
+    "jose": "^6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "canonicalize": {
+      "optional": true
+    },
+    "jose": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "canonicalize": "^2.1.0",
+    "jose": "^6.2.12",
+    "typescript": "^6.0.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

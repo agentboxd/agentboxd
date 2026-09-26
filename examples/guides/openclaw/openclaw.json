@@ -1,0 +1,13 @@
+{
+  "mcp": {
+    "servers": {
+      "agentboxd": {
+        "command": "npx",
+        "args": ["-y", "@agentboxd/mcp"],
+        "env": {
+          "AGENTBOXD_API_KEY": "mr_..."
+        }
+      }
+    }
+  }
+}

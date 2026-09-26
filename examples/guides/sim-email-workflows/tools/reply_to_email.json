@@ -1,0 +1,21 @@
+{
+  "type": "function",
+  "function": {
+    "name": "reply_to_email",
+    "description": "Reply in the same thread to an email the agent received. Only answer what the user asked you to answer.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "message_id": {
+          "type": "string",
+          "description": "The id of the email to answer, from list_unread_emails"
+        },
+        "text": {
+          "type": "string",
+          "description": "Plain-text reply"
+        }
+      },
+      "required": ["message_id", "text"]
+    }
+  }
+}

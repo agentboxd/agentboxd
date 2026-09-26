@@ -1,0 +1,150 @@
+{
+  "id": "agentboxdSendWait",
+  "name": "Agentboxd: send an email and wait for the answer",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "7a2e3d4b-2c5f-4e9b-8d21-3b4c5d6e7f01",
+      "name": "Run manually",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.agentboxd.com/v1/inboxes",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"client_id\": \"n8n-outreach\",\n  \"display_name\": \"Acme Ops\"\n}",
+        "options": {}
+      },
+      "id": "7a2e3d4b-2c5f-4e9b-8d21-3b4c5d6e7f02",
+      "name": "Get or create inbox",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "agentboxdApiKey",
+          "name": "Agentboxd API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.agentboxd.com/v1/inboxes/{{ $json.id }}/messages/send",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: 'dana@example.com', subject: 'Can you confirm Friday?', text: 'Hi Dana,\\n\\nDoes Friday 10:00 still work for the delivery?\\n\\nAcme Ops' }) }}",
+        "options": {}
+      },
+      "id": "7a2e3d4b-2c5f-4e9b-8d21-3b4c5d6e7f03",
+      "name": "Send email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "agentboxdApiKey",
+          "name": "Agentboxd API key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.agentboxd.com/v1/inboxes/{{ $json.inbox_id }}/messages/wait",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "timeout",
+              "value": "60"
+            },
+            {
+              "name": "since",
+              "value": "={{ $json.created_at }}"
+            },
+            {
+              "name": "from",
+              "value": "dana@example.com"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 70000
+        }
+      },
+      "id": "7a2e3d4b-2c5f-4e9b-8d21-3b4c5d6e7f04",
+      "name": "Wait for the reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "agentboxdApiKey",
+          "name": "Agentboxd API key"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Run manually": {
+      "main": [
+        [
+          {
+            "node": "Get or create inbox",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get or create inbox": {
+      "main": [
+        [
+          {
+            "node": "Send email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send email": {
+      "main": [
+        [
+          {
+            "node": "Wait for the reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

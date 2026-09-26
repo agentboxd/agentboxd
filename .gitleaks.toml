@@ -1,0 +1,11 @@
+# gitleaks config for the public repo (CI job "secrets"). Default rules; only documented placeholders are
+# allowlisted. The private monorepo's export scan (publish/export-public-repo.sh) runs before every release too.
+title = "agentboxd public"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documented placeholders and test fixtures named as such"
+regexTarget = "match"
+regexes = ['''(?i)(example|placeholder|your[-_]?(api[-_]?)?key|mr_test_key|whsec_test)''']

@@ -1,0 +1,35 @@
+# Dependency updates for the public packages. Weekly, minor and patch grouped per ecosystem and directory;
+# majors one by one. Security updates are raised as soon as an advisory lands (enable "Dependabot security
+# updates" in the repository settings).
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directories: ["/", "/sdk", "/mcp", "/examples/guides"]
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Paris }
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    commit-message: { prefix: "deps", include: scope }
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directories: ["/sdk-python", "/examples/guides/crewai-email-agent", "/examples/guides/langchain-email-tool", "/examples/guides/openai-agents-sdk-email"]
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Paris }
+    open-pull-requests-limit: 3
+    labels: [dependencies]
+    commit-message: { prefix: "deps", include: scope }
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Paris }
+    open-pull-requests-limit: 3
+    labels: [dependencies]
+    commit-message: { prefix: "ci" }
+    groups:
+      actions:
+        patterns: ["*"]

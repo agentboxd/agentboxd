@@ -1,0 +1,2 @@
+agentboxd>=0.1.0
+openai-agents>=0.22,<0.23

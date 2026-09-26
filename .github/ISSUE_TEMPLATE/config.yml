@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: mailto:security@agentboxd.com
+    about: Please report security problems privately by email, not as a public issue.
+  - name: Account, billing or API support
+    url: mailto:support@agentboxd.com
+    about: Questions about your workspace, plan, deliverability or the hosted API.
+  - name: Documentation
+    url: https://agentboxd.com/docs
+    about: Quickstart, API reference, guides for verification codes, webhooks and MCP.

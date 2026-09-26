@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentboxd"
+version = "0.1.0"
+description = "Python client for Agentboxd: real email inboxes for AI agents. Send, receive, wait for replies, extract OTP codes and magic links."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Agentboxd", email = "support@agentboxd.com" }]
+keywords = [
+    "agentboxd",
+    "ai-agents",
+    "agent-email",
+    "email",
+    "email-api",
+    "inbox",
+    "llm",
+    "mcp",
+    "otp",
+    "verification-code",
+    "magic-link",
+    "webhooks",
+    "temporary-email",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Framework :: AsyncIO",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Email",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = ["httpx>=0.23,<1"]
+
+[project.optional-dependencies]
+# AsyncAgentboxd.stream(): realtime events over a WebSocket.
+stream = ["websockets>=10"]
+# agentboxd.identity.verify_agent_message: ES256 JWS verification and RFC 8785 JSON canonicalization.
+identity = ["pyjwt[crypto]>=2.8", "rfc8785>=0.1.4"]
+dev = ["pytest>=7", "mypy>=1.8", "ruff>=0.4", "build>=1.0", "websockets>=10", "pyjwt[crypto]>=2.8", "rfc8785>=0.1.4"]
+
+[project.urls]
+Homepage = "https://agentboxd.com"
+Documentation = "https://agentboxd.com/docs/python-sdk"
+Repository = "https://github.com/agentboxd/agentboxd"
+Issues = "https://github.com/agentboxd/agentboxd/issues"
+Changelog = "https://github.com/agentboxd/agentboxd/blob/main/sdk-python/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentboxd"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/agentboxd",
+    "tests",
+    "examples",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src", "tests", "examples"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 110
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]

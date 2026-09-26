@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    // Until `agentboxd` is on npm, imports of it resolve to the SDK source in this repository.
+    // In your own project: `npm install agentboxd` and drop this mapping.
+    "paths": { "agentboxd": ["../../sdk/src/index.ts"] }
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules", "**/playwright-report", "**/test-results"]
+}

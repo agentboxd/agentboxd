@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    // Typecheck against the SDK source in this repo (the published package exposes the same API).
+    "paths": {
+      "agentboxd": ["../../sdk/src/index.ts"],
+      "agentboxd/identity": ["../../sdk/src/identity.ts"]
+    },
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false
+  },
+  "include": ["better-auth/**/*.ts", "authjs/**/*.ts", "headless-rp/**/*.ts"]
+}

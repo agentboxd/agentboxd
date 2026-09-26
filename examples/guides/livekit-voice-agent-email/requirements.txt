@@ -1,0 +1,2 @@
+agentboxd>=0.1.0
+livekit-agents>=1.8.3,<2

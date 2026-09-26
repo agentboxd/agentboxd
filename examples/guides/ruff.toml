@@ -1,0 +1,11 @@
+# Lint settings for the Python guide examples (same rules as sdk-python). Run from this folder:
+#   ruff check . && ruff format --check .
+target-version = "py310"
+line-length = 120
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[lint.isort]
+# Each example folder is run from inside itself, so its sibling modules are first-party.
+known-first-party = ["email_tools", "agent", "crew", "email_agent"]

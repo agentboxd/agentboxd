@@ -1,0 +1,24 @@
+{
+  "name": "agentboxd-asim-examples",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent-to-agent messaging examples (docs: https://agentboxd.com/docs/agent-messaging)",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "buyer": "tsx two-agents/buyer.ts",
+    "supplier": "tsx two-agents/supplier.ts"
+  },
+  "dependencies": {
+    "canonicalize": "^2.1.0",
+    "jose": "^6.2.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3"
+  }
+}

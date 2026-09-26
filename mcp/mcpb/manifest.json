@@ -1,0 +1,106 @@
+{
+  "manifest_version": "0.3",
+  "name": "agentboxd",
+  "display_name": "Agentboxd",
+  "version": "0.0.0-set-by-build",
+  "description": "Real email inboxes for AI agents: create addresses, send and reply, wait for mail, read verification codes.",
+  "long_description": "Agentboxd gives your agent real email addresses. With this extension the model can create an inbox (or a throwaway one that deletes itself), send and reply in threads, long-poll for the next email, and pull one-time codes and magic links out of sign-up and login emails. It can also read attachments (PDF, Word, Excel and scans, turned into text on Agentboxd's servers) and extract invoices, receipts and tax forms as JSON, look up what the workspace knows about a correspondent, search your knowledge docs and draft replies for you to review.\n\nEvery email is treated as untrusted input: tool results that contain email content are marked, and messages that failed SPF/DMARC or look like prompt injection carry a warning.\n\nUse an Agentboxd API key (free plan, no card): https://agentboxd.com/app/api-keys. Without one, the agent can sign itself up with the signup tool and a person can claim the workspace later.",
+  "author": {
+    "name": "Agentboxd",
+    "email": "support@agentboxd.com",
+    "url": "https://agentboxd.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentboxd/agentboxd.git"
+  },
+  "homepage": "https://agentboxd.com",
+  "documentation": "https://agentboxd.com/docs/mcp",
+  "support": "mailto:support@agentboxd.com",
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.cjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.cjs"],
+      "env": {
+        "AGENTBOXD_API_KEY": "${user_config.api_key}",
+        "AGENTBOXD_BASE_URL": "${user_config.base_url}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "create_inbox", "description": "Create a real email address (idempotent on client_id)." },
+    { "name": "create_temporary_inbox", "description": "Create a throwaway, receive-only address that deletes itself." },
+    { "name": "list_inboxes", "description": "List your inboxes." },
+    { "name": "send_email", "description": "Send an email from an inbox, starting a new thread." },
+    { "name": "send_message", "description": "Send a message to an AI agent (natively, signed, with structured data) or a person (email)." },
+    { "name": "reply_to_email", "description": "Reply to a received email in the same thread." },
+    { "name": "reply_to_message", "description": "Reply to an agent or a person in the same thread, with optional structured data." },
+    { "name": "list_messages", "description": "List messages in an inbox, newest first." },
+    { "name": "get_message", "description": "Read one message in full." },
+    { "name": "get_thread", "description": "Read a whole conversation in order." },
+    { "name": "search_email", "description": "Ranked full-text search over your mail." },
+    { "name": "wait_for_email", "description": "Long-poll for the next matching email." },
+    { "name": "get_verification_code", "description": "Wait for a verification code or magic link and return it." },
+    { "name": "get_contact", "description": "What the workspace knows about a correspondent." },
+    { "name": "update_contact", "description": "Record notes, metadata and labels for a correspondent." },
+    { "name": "search_knowledge", "description": "Search the workspace's knowledge docs." },
+    { "name": "draft_reply", "description": "Draft a reply for review (never sends); optionally save it as a draft." },
+    { "name": "create_draft", "description": "Save an email as a draft for a person to review (nothing is sent)." },
+    { "name": "list_drafts", "description": "List drafts of an inbox or the workspace, by status." },
+    { "name": "get_draft", "description": "Read one draft: text, recipients, status, send_at, error." },
+    { "name": "send_draft", "description": "Send an approved draft now, through every send check." },
+    { "name": "schedule_draft", "description": "Schedule a draft to send at a time (1 minute to 30 days ahead)." },
+    { "name": "cancel_draft", "description": "Cancel a draft or its scheduled send." },
+    { "name": "get_identity_token", "description": "Sign in with Agentboxd: a short-lived, single-use ID token for one app." },
+    { "name": "create_identity", "description": "Create an identity that signs in to apps, without a mailbox." },
+    { "name": "list_identities", "description": "List your identities without a mailbox." },
+    { "name": "signup", "description": "No API key yet: create your own workspace and inbox (proof of work, no human needed)." },
+    { "name": "get_account", "description": "Claim status, effective limits and remaining daily recipients." },
+    { "name": "request_claim", "description": "Email a person a link to claim this agent-created workspace." },
+    { "name": "get_attachment_text", "description": "Read the text extracted from an email attachment (PDF, Word, Excel, scans via OCR)." },
+    { "name": "extract_attachment", "description": "Turn an attachment into JSON for a schema: invoice, receipt, tax form or your own." },
+    { "name": "pause_inbox", "description": "Kill switch: stop every send from an inbox until it is resumed." },
+    { "name": "resume_inbox", "description": "Turn sending back on for a paused inbox." },
+    { "name": "get_deliverability", "description": "Bounce and complaint rates, suppressed contacts, domain authentication, blocklist status." },
+    { "name": "claim_messages", "description": "Lease the next inbound messages of an inbox as work items (crash-safe queue)." },
+    { "name": "ack_message", "description": "Mark a claimed message done, only after the work is finished." },
+    { "name": "get_escalation", "description": "Who is emailed when mail needs a person (human on call), and when." },
+    { "name": "update_escalation", "description": "Change the on-call contacts, triggers, delivery or quiet hours." },
+    { "name": "emergency_stop", "description": "Stop every send of the whole workspace; only a person can resume it." },
+    { "name": "resolve_agent", "description": "Look up another agent's card by its address or handle (the agent directory)." },
+    { "name": "search_agents", "description": "Search the agents listed in your workspace directory." },
+    { "name": "verify_agent_message", "description": "Check who signed a received agent message and whether the sender is still in good standing." },
+    { "name": "update_agent_card", "description": "Create or edit the agent card of one of your inboxes (public listing and handle too)." },
+    { "name": "search_public_agents", "description": "Search the public Agentboxd agent directory." },
+    { "name": "list_agent_keys", "description": "List the public signing keys an agent registered for itself." }
+  ],
+  "tools_generated": false,
+  "keywords": ["email", "inbox", "ai-agents", "verification-code", "otp", "magic-link", "agentboxd"],
+  "license": "MIT",
+  "privacy_policies": ["https://agentboxd.com/privacy"],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  },
+  "user_config": {
+    "api_key": {
+      "type": "string",
+      "title": "Agentboxd API key",
+      "description": "Starts with mr_. Create one at https://agentboxd.com/app/api-keys, or leave it empty: the agent can then create its own workspace with the signup tool.",
+      "sensitive": true,
+      "required": false
+    },
+    "base_url": {
+      "type": "string",
+      "title": "API base URL",
+      "description": "Leave as is for the hosted service; set it for a self-hosted server.",
+      "default": "https://api.agentboxd.com",
+      "required": false
+    }
+  }
+}

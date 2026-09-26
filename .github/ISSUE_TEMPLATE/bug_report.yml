@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in the TypeScript client, the MCP server, the Python client or an example doesn't work.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please **never paste an API key** (`mr_...`) or the content of private emails.
+        Security problems go to security@agentboxd.com, not here.
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      options:
+        - agentboxd (npm, TypeScript client)
+        - "@agentboxd/mcp (MCP server)"
+        - agentboxd (PyPI, Python client)
+        - examples
+        - not sure / the API itself
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime and OS
+      placeholder: "Node 22.12 on macOS 15 / Python 3.12 on Ubuntu 24.04 / Claude Desktop 1.x on Windows 11"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: A short code snippet or MCP client config that shows the problem.
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output
+      description: Error messages, stack traces, or the `error.code` returned by the API. Remove keys and email content.
+      render: text

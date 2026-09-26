@@ -1,0 +1,2 @@
+agentboxd>=0.1.0
+google-adk>=2.10,<3

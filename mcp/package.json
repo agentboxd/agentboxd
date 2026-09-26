@@ -1,0 +1,76 @@
+{
+  "name": "@agentboxd/mcp",
+  "version": "0.2.0",
+  "description": "MCP server for Agentboxd: give Claude, Cursor or any MCP client real email inboxes. Send, reply, wait for mail, read OTP codes and magic links.",
+  "mcpName": "com.agentboxd/mcp",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "agentboxd",
+    "ai-agents",
+    "agent-email",
+    "email",
+    "inbox",
+    "llm",
+    "claude",
+    "cursor",
+    "otp",
+    "verification-code",
+    "magic-link",
+    "temporary-email"
+  ],
+  "homepage": "https://agentboxd.com/docs/mcp",
+  "bugs": {
+    "url": "https://github.com/agentboxd/agentboxd/issues",
+    "email": "support@agentboxd.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentboxd/agentboxd.git",
+    "directory": "mcp"
+  },
+  "license": "MIT",
+  "author": "Agentboxd <support@agentboxd.com> (https://agentboxd.com)",
+  "type": "module",
+  "bin": {
+    "agentboxd-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --packages=external --outfile=dist/index.js",
+    "build:mcpb": "node scripts/build-mcpb.mjs",
+    "dev": "tsx src/index.ts",
+    "smoke": "node scripts/smoke-stdio.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build && npm run smoke",
+    "build:hosted": "esbuild src/hosted-main.ts --bundle --platform=node --format=esm --target=node20 --packages=external --outfile=dist-hosted/server.js",
+    "start:hosted": "node dist-hosted/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.1"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

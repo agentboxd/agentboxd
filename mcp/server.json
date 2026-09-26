@@ -1,0 +1,48 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.agentboxd/mcp",
+  "title": "Agentboxd",
+  "description": "Real email inboxes for AI agents: send, reply, wait for mail, read OTP codes and magic links.",
+  "websiteUrl": "https://agentboxd.com/docs/mcp",
+  "repository": {
+    "url": "https://github.com/agentboxd/agentboxd",
+    "source": "github",
+    "subfolder": "mcp"
+  },
+  "icons": [
+    {
+      "src": "https://agentboxd.com/icon-512.png",
+      "mimeType": "image/png",
+      "sizes": ["512x512"]
+    }
+  ],
+  "version": "0.2.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@agentboxd/mcp",
+      "version": "0.2.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "AGENTBOXD_API_KEY",
+          "description": "Agentboxd API key (starts with mr_). Create one at https://agentboxd.com/app/api-keys, or leave it unset and let the agent call the signup tool.",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "AGENTBOXD_BASE_URL",
+          "description": "API base URL. Only change it for a self-hosted server.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string",
+          "default": "https://api.agentboxd.com"
+        }
+      ]
+    }
+  ]
+}

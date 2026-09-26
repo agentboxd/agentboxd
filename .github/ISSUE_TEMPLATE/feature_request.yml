@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a client method, MCP tool, example or improvement.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The agent workflow or use case, and where the current packages get in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help?
+      description: A method signature, a tool description, or a sketch of the behaviour you'd like.
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      multiple: true
+      options:
+        - agentboxd (npm, TypeScript client)
+        - "@agentboxd/mcp (MCP server)"
+        - agentboxd (PyPI, Python client)
+        - examples
+        - the API itself

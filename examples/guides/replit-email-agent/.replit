@@ -1,0 +1,14 @@
+# Replit configuration (https://docs.replit.com/features/project-setup/configuration).
+# Webhook mode by default. For stream mode, publish as a Reserved VM (background worker) and change the
+# run command to `npm run worker` in the Publishing settings.
+entrypoint = "server.ts"
+modules = ["nodejs-20"]
+run = "npm start"
+
+[deployment]
+build = ["npm", "install"]
+run = ["npm", "start"]
+
+[[ports]]
+localPort = 3000
+externalPort = 80

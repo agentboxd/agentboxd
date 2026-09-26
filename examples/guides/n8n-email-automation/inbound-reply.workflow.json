@@ -1,0 +1,101 @@
+{
+  "id": "agentboxdInboundAck",
+  "name": "Agentboxd: acknowledge inbound email",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agentboxd-inbound",
+        "responseMode": "onReceived",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "6f1d2c3a-1b4e-4d8a-9c10-2a3b4c5d6e01",
+      "name": "Agentboxd webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "5c7e9a10-3d2f-4b6a-8e1c-9f0a1b2c3d41"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node (\"Run Once for All Items\"): verify the Agentboxd webhook signature and keep only\n// email worth answering. Needs NODE_FUNCTION_ALLOW_BUILTIN=crypto on the n8n instance and the\n// Webhook node's \"Raw Body\" option on. The same code is embedded in inbound-reply.workflow.json.\nconst crypto = require('crypto');\n\n// The secret returned once by POST /v1/webhooks. Keep it out of shared workflow exports.\nconst SECRET = 'whsec_replace_me';\n\nconst item = $input.first();\nconst headers = item.json.headers;\nconst raw = await this.helpers.getBinaryDataBuffer(0, 'data');\n\nconst ts = String(headers['x-mailroom-timestamp'] || '');\nconst sig = String(headers['x-mailroom-signature'] || '');\nif (!/^\\d+$/.test(ts) || Math.abs(Date.now() / 1000 - Number(ts)) > 300) {\n  throw new Error('missing or stale X-Mailroom-Timestamp');\n}\nconst expected = crypto.createHmac('sha256', SECRET).update(`${ts}.`).update(raw).digest('hex');\nif (!/^[0-9a-f]{64}$/i.test(sig) || !crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'))) {\n  throw new Error('bad X-Mailroom-Signature');\n}\n\nconst event = JSON.parse(raw.toString('utf8'));\nif (event.type !== 'message.received') return [];\n\nconst m = event.data.message;\n// Spoofed senders: never auto-answer them.\nif (m.labels.includes('spf-fail') || m.labels.includes('dmarc-fail')) return [];\n// Auto-replies, bulk mail and bounces: answering them starts mail loops.\nconst auto = String(m.headers['auto-submitted'] || 'no').toLowerCase();\nconst precedence = String(m.headers['precedence'] || '').toLowerCase();\nif (auto !== 'no' || ['bulk', 'junk', 'list', 'auto_reply'].includes(precedence)) return [];\n\nreturn [\n  {\n    json: {\n      inbox_id: event.data.inbox.id,\n      message_id: m.id,\n      from: m.from,\n      subject: m.subject || '(no subject)',\n      text: m.extracted_text || '',\n    },\n  },\n];\n"
+      },
+      "id": "6f1d2c3a-1b4e-4d8a-9c10-2a3b4c5d6e02",
+      "name": "Verify and filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.agentboxd.com/v1/inboxes/{{ $json.inbox_id }}/messages/{{ $json.message_id }}/reply",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Idempotency-Key",
+              "value": "=ack-{{ $json.message_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'Hi,\\n\\nThanks for your email about \"' + $json.subject + '\". We have it and will answer within one business day.\\n\\nAcme Support' }) }}",
+        "options": {}
+      },
+      "id": "6f1d2c3a-1b4e-4d8a-9c10-2a3b4c5d6e03",
+      "name": "Reply in thread",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "agentboxdApiKey",
+          "name": "Agentboxd API key"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Agentboxd webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify and filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify and filter": {
+      "main": [
+        [
+          {
+            "node": "Reply in thread",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
