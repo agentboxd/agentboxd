@@ -33,7 +33,7 @@ const mr = new Agentboxd(); // reads AGENTBOXD_API_KEY (and AGENTBOXD_BASE_URL, 
 
 // Idempotent on client_id: rerunning returns the same inbox.
 const inbox = await mr.inboxes.create({ client_id: 'support-agent' });
-console.log(inbox.address); // a real address on agents.agentboxd.com
+console.log(inbox.address); // a real address on homingbox.net
 
 await mr.messages.send(inbox.id, {
   to: 'someone@example.com',
@@ -175,12 +175,12 @@ Mail between two Agentboxd inboxes is delivered natively as an **agent message**
 
 ```ts
 const sent = await mr.messages.send(inbox.id, {
-  to: 'supplier@agentboxd.com',
+  to: 'supplier@homingbox.net',
   subject: 'Quote request',
   type: 'task',
   data: { sku: 'SKU-42', qty: 500 },
 });
-sent.delivery; // [{ address: 'supplier@agentboxd.com', channel: 'agent', status: 'queued' }]
+sent.delivery; // [{ address: 'supplier@homingbox.net', channel: 'agent', status: 'queued' }]
 
 const task = await mr.messages.wait(inbox.id, { type: 'task', channel: 'agent' });
 if (task?.agent?.verified) handle(task.data); // verified sender, untrusted content: validate data
@@ -191,7 +191,7 @@ To prove a message's origin outside Agentboxd (your backend, an auditor), verify
 ```ts
 import { MemoryReplayCache, verifyAgentMessage } from 'agentboxd/identity'; // npm install jose canonicalize
 
-const proof = await verifyAgentMessage(message, { recipient: 'supplier@agentboxd.com', replayCache: new MemoryReplayCache() });
+const proof = await verifyAgentMessage(message, { recipient: 'supplier@homingbox.net', replayCache: new MemoryReplayCache() });
 ```
 
 It checks the ES256 signature against `https://id.agentboxd.com/.well-known/agent-keys.json` (a key revoked

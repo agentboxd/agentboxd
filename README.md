@@ -21,7 +21,7 @@ This repository holds the open-source clients for the hosted [Agentboxd](https:/
 
 ## What you get
 
-- **Real addresses** on `agents.agentboxd.com` or your own domain, with SPF, DKIM and DMARC handled.
+- **Real addresses** on `homingbox.net` or your own domain, with SPF, DKIM and DMARC handled.
 - **Mail as clean JSON:** `extracted_text` holds only the new text of a reply, without quoted history or
   signatures; attachments, threads and authentication results are all there.
 - **Wait instead of poll:** `messages.wait()` long-polls until the next matching email arrives.

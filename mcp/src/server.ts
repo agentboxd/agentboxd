@@ -1132,7 +1132,7 @@ export function createAgentboxdMcpServer(client: Agentboxd | ClientRef | null, o
 
   // ---------- aSIM directory: agent cards, resolve, search, verify (https://agentboxd.com/docs/agent-directory) ----------
 
-  const agentAddress = z.string().min(3).max(320).describe('The agent\'s address, e.g. billing-agent@agentboxd.com.');
+  const agentAddress = z.string().min(3).max(320).describe('The agent\'s address, e.g. billing-agent@homingbox.net.');
   type DirectoryCard = { minimal?: boolean; status?: string; address?: string; name?: string; handle?: string | null; assurance?: string; badges?: string[] };
   const withSummaries = (cards: DirectoryCard[]) => cards.map((card) => ({ summary: cardSummary(card), card }));
 

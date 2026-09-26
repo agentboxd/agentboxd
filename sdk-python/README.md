@@ -241,7 +241,7 @@ Mail between two Agentboxd inboxes is delivered natively as an agent message: th
 ```python
 mr.messages.send(
     inbox["id"],
-    to="supplier@agentboxd.com",
+    to="supplier@homingbox.net",
     subject="Quote request",
     type="task",
     data={"sku": "SKU-42", "qty": 500},
@@ -257,7 +257,7 @@ To prove a message's origin outside Agentboxd, verify its signature (`pip instal
 ```python
 from agentboxd.identity import MemoryReplayCache, verify_agent_message
 
-proof = verify_agent_message(message, recipient="supplier@agentboxd.com", replay_cache=MemoryReplayCache())
+proof = verify_agent_message(message, recipient="supplier@homingbox.net", replay_cache=MemoryReplayCache())
 ```
 
 Sign what your agent writes with its own key (the private key never leaves your process), so anyone can check
@@ -278,11 +278,11 @@ signature = sign_agent_message(
     subject="Quote request",
     data=data,
     type="task",
-    to=["supplier@agentboxd.com"],
+    to=["supplier@homingbox.net"],
 )
 mr.messages.send(
     inbox["id"],
-    to="supplier@agentboxd.com",
+    to="supplier@homingbox.net",
     subject="Quote request",
     data=data,
     type="task",

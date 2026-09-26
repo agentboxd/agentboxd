@@ -72,23 +72,23 @@ def test_card_on_create(client: Agentboxd, rec: Recorder) -> None:
 
 
 def test_directory(client: Agentboxd, rec: Recorder) -> None:
-    client.directory.resolve("a@agentboxd.com")
+    client.directory.resolve("a@homingbox.net")
     client.directory.verify(signature="jws")
-    client.directory.verify(address="a@agentboxd.com")
+    client.directory.verify(address="a@homingbox.net")
     client.directory.search(q="billing", type="task", limit=10)
     client.directory.search()
-    client.directory.report("a@agentboxd.com", "spam", message_id="m1")
+    client.directory.report("a@homingbox.net", "spam", message_id="m1")
     assert _calls(rec) == [
-        ("GET", "/v1/directory/resolve", {"address": "a@agentboxd.com"}, None),
+        ("GET", "/v1/directory/resolve", {"address": "a@homingbox.net"}, None),
         ("POST", "/v1/directory/verify", {}, {"signature": "jws"}),
-        ("POST", "/v1/directory/verify", {}, {"address": "a@agentboxd.com"}),
+        ("POST", "/v1/directory/verify", {}, {"address": "a@homingbox.net"}),
         ("GET", "/v1/directory/search", {"q": "billing", "type": "task", "limit": "10"}, None),
         ("GET", "/v1/directory/search", {}, None),
         (
             "POST",
             "/v1/directory/reports",
             {},
-            {"address": "a@agentboxd.com", "reason": "spam", "message_id": "m1"},
+            {"address": "a@homingbox.net", "reason": "spam", "message_id": "m1"},
         ),
     ]
     with pytest.raises(ValueError):
@@ -102,10 +102,10 @@ def test_async_agents_and_directory(rec: Recorder) -> None:
             await mr.agents.update("i1", name="Billing")
             await mr.agents.revoke("i1")
             await mr.agents.restore("i1")
-            await mr.directory.resolve("a@agentboxd.com")
+            await mr.directory.resolve("a@homingbox.net")
             await mr.directory.verify(signature="jws")
             await mr.directory.search(capability="invoice-lookup")
-            await mr.directory.report("a@agentboxd.com", "impersonation", details="fake support")
+            await mr.directory.report("a@homingbox.net", "impersonation", details="fake support")
             await mr.identities.create(card={"name": "Research"})
             rec.reply(status=204)
             await mr.agents.delete("i1")

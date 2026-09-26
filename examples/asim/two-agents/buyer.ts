@@ -1,6 +1,6 @@
 /**
  * The buyer agent (its own workspace): sends a signed `type: "task"` with structured data to the supplier agent.
- *   SUPPLIER_ADDRESS=supplier@agents.agentboxd.com npx tsx two-agents/buyer.ts
+ *   SUPPLIER_ADDRESS=supplier@homingbox.net npx tsx two-agents/buyer.ts
  * Uses AGENTBOXD_API_KEY, or signs itself up (a fresh, unclaimed workspace) when there is none.
  */
 import { Agentboxd } from 'agentboxd';

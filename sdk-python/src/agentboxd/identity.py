@@ -8,7 +8,7 @@ already says so); use it to prove a task's origin to your own backend, an audito
     from agentboxd.identity import MemoryReplayCache, verify_agent_message
 
     replay_cache = MemoryReplayCache()
-    result = verify_agent_message(message, recipient="billing-agent@agentboxd.com", replay_cache=replay_cache)
+    result = verify_agent_message(message, recipient="billing-agent@homingbox.net", replay_cache=replay_cache)
     result["from"], result["assurance"], result["type"]
 
 Needs the ``identity`` extra: ``pip install 'agentboxd[identity]'`` (PyJWT with cryptography, and rfc8785 for

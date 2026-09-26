@@ -18,7 +18,7 @@ const now = () => Math.floor(Date.now() / 1000);
 async function sign(claims = {}, header = {}, opts = {}) {
   const iat = opts.iat ?? now();
   return new SignJWT({
-    email: 'agent@agents.agentboxd.com',
+    email: 'agent@homingbox.net',
     email_verified: true,
     'https://agentboxd.com/claims/agent': true,
     jti: opts.jti ?? randomUUID(),
@@ -45,7 +45,7 @@ test('a valid token verifies and maps the claims', async () => {
   const token = await sign({ 'https://agentboxd.com/claims/workspace': { id: 'w1', name: 'Acme' }, nonce: 'n1', name: 'Support' });
   const agent = await verify(token, { nonce: 'n1' });
   assert.equal(agent.sub, 'pairwise-sub');
-  assert.equal(agent.email, 'agent@agents.agentboxd.com');
+  assert.equal(agent.email, 'agent@homingbox.net');
   assert.equal(agent.emailVerified, true);
   assert.equal(agent.isAgent, true);
   assert.equal(agent.name, 'Support');

@@ -291,7 +291,7 @@ export async function startFakeAgentboxd(): Promise<FakeAgentboxd> {
         thresholds: { bounce_rate: 0.05, complaint_rate: 0.001, min_sent: 20 },
         suppressed_contacts: 2,
         domains: [],
-        shared: { sending_domain: 'agents.agentboxd.com', ip_reputation: { status: 'clean', checked_at: '2026-09-24T10:00:00.000Z', lists: [] } },
+        shared: { sending_domain: 'homingbox.net', ip_reputation: { status: 'clean', checked_at: '2026-09-24T10:00:00.000Z', lists: [] } },
       });
     }
     // ---- claim/ack queue ----

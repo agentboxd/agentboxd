@@ -53,7 +53,7 @@ async function cli(argv, { routes = {}, env = {}, stdin, WebSocket, interrupted,
 
 const inbox = (over = {}) => ({
   id: 'inb_1',
-  address: 'bot@agents.agentboxd.com',
+  address: 'bot@homingbox.net',
   username: 'bot',
   display_name: null,
   client_id: null,
@@ -71,7 +71,7 @@ const message = (over = {}) => ({
   direction: 'inbound',
   status: 'received',
   from: 'Alice <alice@example.com>',
-  to: ['bot@agents.agentboxd.com'],
+  to: ['bot@homingbox.net'],
   cc: [],
   bcc: [],
   subject: 'Hello',
@@ -180,7 +180,7 @@ test('inboxes list: table, --json, pagination hint', async () => {
   const routes = { 'GET /v1/inboxes': { data: [inbox(), inbox({ id: 'inb_2', address: 'x@tmp.agentboxd.com', temporary: true, expires_at: '2026-09-26T11:00:00Z' })], next_cursor: 'c2' } };
   const r = await cli(['inboxes', 'list'], { routes });
   assert.equal(r.code, 0);
-  assert.match(r.stdout, /inb_1\s+bot@agents\.agentboxd\.com\s+active/);
+  assert.match(r.stdout, /inb_1\s+bot@homingbox\.net\s+active/);
   assert.match(r.stdout, /temporary until 2026-09-26 11:00/);
   assert.match(r.stderr, /--cursor c2/);
   assert.equal(r.calls[0].url.searchParams.get('include_temporary'), 'true');
@@ -201,13 +201,13 @@ test('inboxes create, temporary, pause and resume (by address)', async () => {
   };
   const c = await cli(['inboxes', 'create', '--client-id', 'support', '--display-name', 'Support'], { routes });
   assert.equal(c.code, 0);
-  assert.equal(c.stdout.trim(), 'bot@agents.agentboxd.com');
+  assert.equal(c.stdout.trim(), 'bot@homingbox.net');
   assert.deepEqual(c.calls[0].body, { display_name: 'Support', client_id: 'support' });
   const t = await cli(['inboxes', 'create', '--temporary', '--ttl', '600'], { routes });
   assert.deepEqual(t.calls[0].body, { ttl_seconds: 600 });
   const tBad = await cli(['inboxes', 'create', '--temporary', '--username', 'x'], { routes });
   assert.equal(tBad.code, 2);
-  const p = await cli(['inboxes', 'pause', 'BOT@agents.agentboxd.com', '--reason', 'loop'], { routes });
+  const p = await cli(['inboxes', 'pause', 'BOT@homingbox.net', '--reason', 'loop'], { routes });
   assert.equal(p.code, 0, p.stderr);
   assert.equal(p.calls[1].key, 'POST /v1/inboxes/inb_1/pause');
   assert.deepEqual(p.calls[1].body, { reason: 'loop' });
@@ -403,7 +403,7 @@ test('tail: subscribes with filters and prints events until interrupted', async 
   };
   routes['POST /v1/stream/token'] = () => [201, { token: 'st_1', expires_at: '', url: 'ws://api.test/v1/stream?token=st_1' }];
   setTimeout(() => stop(), 50);
-  const r = await cli(['tail', '--inbox', 'bot@agents.agentboxd.com', '--event', 'message.received', '--envelope', '--json'], { routes, WebSocket: FakeWS, interrupted });
+  const r = await cli(['tail', '--inbox', 'bot@homingbox.net', '--event', 'message.received', '--envelope', '--json'], { routes, WebSocket: FakeWS, interrupted });
   assert.equal(r.code, 0, r.stderr);
   assert.equal(FakeWS.sockets[0].url, 'ws://api.test/v1/stream?token=st_1');
   assert.deepEqual(FakeWS.sockets[0].sent[0], { type: 'subscribe', inbox_ids: ['inb_1'], event_types: ['message.received'], payload: 'envelope' });

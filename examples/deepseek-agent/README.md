@@ -57,10 +57,10 @@ PowerShell: `$env:DEEPSEEK_API_KEY="sk-..."; $env:AGENTBOXD_API_KEY="mr_..."; $e
 
 ```text
 $ npx tsx examples/deepseek-agent/index.ts --demo signup --simulate
-Inbox: deepseek-demo@agents.agentboxd.com (7f3c…)
+Inbox: deepseek-demo@homingbox.net (7f3c…)
 Simulating Acme: injecting a verification email via /dev/inbound in 3 s…
 Model: deepseek-flash · API: http://localhost:3000
-Task: You just signed up to Acme Cloud with deepseek-demo@agents.agentboxd.com (inbox_id 7f3c…) at
+Task: You just signed up to Acme Cloud with deepseek-demo@homingbox.net (inbox_id 7f3c…) at
 2026-09-24T12:00:00.000Z. Retrieve the verification code that Acme emailed and report it. …
 
 — step 1/15

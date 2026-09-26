@@ -21,7 +21,7 @@ test('exports the client under both names (Mailroom* are deprecated aliases)', (
 });
 
 test('sends the key as a Bearer token to the base URL', async () => {
-  const { calls, fetch } = stubFetch(200, { id: 'inb_1', address: 'a@agents.agentboxd.com' });
+  const { calls, fetch } = stubFetch(200, { id: 'inb_1', address: 'a@homingbox.net' });
   const mr = new Agentboxd({ apiKey: 'mr_test', baseUrl: 'http://api.test/', fetch });
   const inbox = await mr.inboxes.create({ client_id: 'x' });
   assert.equal(inbox.id, 'inb_1');

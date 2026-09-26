@@ -49,10 +49,10 @@ def _verify(vector: dict[str, Any], **overrides: Any) -> Any:
 def test_send_and_reply_carry_data_and_type(client: Agentboxd, rec: Recorder) -> None:
     rec.reply({"id": "m1", "channel": "agent", "type": "task", "data": {"sku": "SKU-42"}}, status=202)
     sent = client.messages.send(
-        "inb_1", to="b@agentboxd.com", subject="Quote", data={"sku": "SKU-42"}, type="task"
+        "inb_1", to="b@homingbox.net", subject="Quote", data={"sku": "SKU-42"}, type="task"
     )
     assert rec.last_json() == {
-        "to": "b@agentboxd.com",
+        "to": "b@homingbox.net",
         "subject": "Quote",
         "data": {"sku": "SKU-42"},
         "type": "task",
@@ -92,7 +92,7 @@ def test_async_send_with_data(rec: Recorder) -> None:
     async def main() -> None:
         async with make_async(rec) as client:
             await client.messages.send(
-                "inb_1", to="b@agentboxd.com", subject="T", data={"x": 1}, type="event"
+                "inb_1", to="b@homingbox.net", subject="T", data={"x": 1}, type="event"
             )
 
     asyncio.run(main())
@@ -102,7 +102,7 @@ def test_async_send_with_data(rec: Recorder) -> None:
 def test_message_types_accept_agent_fields() -> None:
     agent: MessageAgent = {
         "verified": True,
-        "from": "a@agentboxd.com",
+        "from": "a@homingbox.net",
         "assurance": "workspace",
         "signed_at": "2026-09-25T09:14:03.000Z",
         "kid": "k1",
@@ -115,7 +115,7 @@ def test_message_types_accept_agent_fields() -> None:
         "agent": agent,
         "delivery": None,
     }  # type: ignore[typeddict-item]
-    assert partial["agent"] is not None and partial["agent"]["from"] == "a@agentboxd.com"
+    assert partial["agent"] is not None and partial["agent"]["from"] == "a@homingbox.net"
 
 
 # ---------- verify_agent_message ----------
