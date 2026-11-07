@@ -261,6 +261,25 @@ describe('safety', () => {
     expect(compactMessage(makeMessage({ id: 'msg_ok', labels: ['ai:billing', 'ai:urgent'] })).warning).toBeUndefined();
   });
 
+  it('skips withheld mail in list_messages and says why get_message has no content', async () => {
+    const withheld = (id: string, state: 'pending' | 'held') =>
+      makeMessage({ id, subject: '[withheld]', text: null, html: null, extracted_text: null, withheld: { state, reason: null, attachments: 0 } });
+    const { agentboxd } = fakeAgentboxd({ inbound: [withheld('msg_pending', 'pending'), withheld('msg_held', 'held'), makeMessage({ id: 'msg_ok' })] });
+    const tools = new MailTools(agentboxd);
+
+    const listed = await tools.execute('list_messages', JSON.stringify({ inbox_id: INBOX.id }));
+    const data = JSON.parse(listed.content.slice(UNTRUSTED_PREFIX.length)) as { data: { id: string }[] };
+    expect(data.data.map((m) => m.id)).toEqual(['msg_ok']);
+
+    const pending = await tools.execute('get_message', JSON.stringify({ message_id: 'msg_pending' }));
+    expect(pending.content).toMatch(/still being checked/);
+    expect(pending.content).not.toMatch(/extracted_text/);
+    const held = await tools.execute('get_message', JSON.stringify({ message_id: 'msg_held' }));
+    expect(held.content).toMatch(/Held for a person/);
+    const ok = await tools.execute('get_message', JSON.stringify({ message_id: 'msg_ok' }));
+    expect(ok.content).toMatch(/"extracted_text":"Hi there"/);
+  });
+
   it('send guard: max-emails-per-run blocks the 6th send (parallel calls run in order)', async () => {
     const { agentboxd, sends } = fakeAgentboxd();
     const sendCalls = Array.from({ length: 6 }, (_, i) =>

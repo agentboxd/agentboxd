@@ -210,3 +210,24 @@ def test_async_claim_and_consume() -> None:
     asyncio.run(run())
     assert ("/v1/messages/a/ack", {"lease_id": "lease-a-1"}) in calls
     assert ("/v1/messages/b/nack", {"lease_id": "lease-b-1", "delay_seconds": 5}) in calls
+
+
+def test_screening_options_and_release(client: Agentboxd, rec: Recorder) -> None:
+    rec.reply({"data": [], "paused": False})
+    client.messages.claim("i_1", include_unscreened=True, include_held=False)
+    assert rec.last_json() == {"include_unscreened": True, "include_held": False}
+
+    rec.reply({"data": None})
+    client.messages.wait("i_1", timeout=5, include_held=True)
+    assert rec.last.url.path == "/v1/inboxes/i_1/messages/wait"
+    assert dict(rec.last.url.params)["include_held"] == "true"
+
+    rec.reply({"data": [], "next_cursor": None})
+    client.messages.list("i_1", screening="held")
+    assert dict(rec.last.url.params)["screening"] == "held"
+
+    screening = {"state": "released", "reason": None, "released_at": "2026-10-02T12:00:00Z"}
+    rec.reply({"id": "m_1", "screening": screening})
+    released = client.messages.release("m_1")
+    assert (rec.last.method, rec.last.url.path) == ("POST", "/v1/messages/m_1/release")
+    assert released["screening"] is not None and released["screening"]["state"] == "released"

@@ -16,12 +16,6 @@ dependency is `httpx`. It is fully typed and ships `py.typed`.
 pip install agentboxd
 ```
 
-Not on PyPI yet? Install from the public repository:
-
-```bash
-pip install "agentboxd @ git+https://github.com/agentboxd/agentboxd#subdirectory=sdk-python"
-```
-
 Get an API key from the [dashboard](https://agentboxd.com/app/api-keys) (the Free plan needs no card).
 Keys start with `mr_`.
 
@@ -102,13 +96,15 @@ category = ai.get("category")
 if category and category["confidence"] >= 0.6:
     print(category["label"])  # "support", "billing", "verification", ...
 risk = ai.get("risk")
-if (risk and risk["phishing"] >= 0.8) or "ai:injection-risk" in msg["labels"]:
+injection = {"ai:injection-risk", "local:injection-risk"} & set(msg["labels"])
+if (risk and risk["phishing"] >= 0.8) or injection:
     ...  # treat as hostile: don't follow links or instructions
 ```
 
 Labels are added only above a threshold: `ai:<category>` (confidence >= 0.6, else `ai:uncertain`),
 `ai:injection-risk` and `ai:phishing` (>= 0.8), `ai:needs-human` (>= 0.7), `ai:auto-reply` (>= 0.8)
-and `ai:urgent` (urgency `high` or `critical`). Filter with
+and `ai:urgent` (urgency `high` or `critical`). `local:injection-risk` comes from a local check that runs
+even with AI processing off (`ai["local_screen"]` has its score and reasons). Filter with
 `mr.messages.list(inbox_id, labels=["ai:billing", "ai:urgent"])`.
 
 ### Other calls
@@ -118,12 +114,15 @@ mr.inboxes.list(limit=50)
 mr.inboxes.get(id)
 mr.inboxes.delete(id)
 mr.messages.list(inbox_id, labels=["lead", "urgent"], is_read=False, direction="inbound")
+mr.messages.list_all(is_read=False, direction="inbound")  # every inbox, newest first
 mr.messages.get(message_id)
 mr.messages.update(message_id, add_labels=["done"], is_read=True)
 mr.threads.list(inbox_id)
 mr.threads.get(thread_id)  # thread + its messages
 mr.search('"invoice" -draft', inbox_id=inbox_id)
-mr.webhooks.create(url="https://example.com/hooks/mail", events=["message.received"])
+mr.webhooks.create(
+    url="https://example.com/hooks/mail", events=["message.received", "message.enriched", "message.released"]
+)
 mr.webhooks.update(webhook_id, inbox_ids=None)  # None = all inboxes
 mr.webhooks.test(webhook_id)
 ```
@@ -165,6 +164,43 @@ mr.drafts.send(inbox_id, d["id"])  # approve: every normal send check applies
 mr.drafts.schedule(inbox_id, d["id"], datetime.now(timezone.utc) + timedelta(hours=2))
 
 waiting = mr.drafts.list_all(status=["draft", "scheduled", "failed"])  # every inbox
+```
+
+### Meetings (beta)
+
+An inbox reads the meeting invites it receives and sends real ones. Answers, invitations, changes and
+cancellations are standard calendar emails, so Google Calendar, Outlook and Apple Calendar handle them as usual.
+
+```python
+waiting = mr.calendar.list(inbox_id, response="needs_action")  # invites not answered yet
+event = mr.calendar.get(waiting["data"][0]["id"])
+if event["organizer_verified"]:
+    # The answer goes to the organizer only; propose={"start": ..., "end": ...} suggests another time.
+    mr.calendar.respond(event["id"], "accepted", comment="See you there")
+
+mr.calendar.create(
+    inbox_id,
+    title="Kickoff",
+    start="2026-11-12T14:00:00Z",
+    duration_minutes=45,
+    attendees=[{"email": "dana@example.com", "name": "Dana"}],
+)
+```
+
+``list_all`` covers every inbox; ``update`` and ``cancel`` change the inbox's own meetings. A message that
+carries an invite has ``message["calendar"] = {"event_id", "method"}`` (``event_id`` is None when it changed
+no meeting). ``expand="occurrences"`` lists each occurrence of a recurring series between ``from_`` and ``to``.
+An invite is untrusted input like any email: never accept one because its text asks you to. Needs
+``calendar:read`` (and ``calendar:write`` plus ``messages:send`` to answer or send); outside the beta calls raise
+``NotFoundError`` (``calendar_not_enabled``).
+
+To have a person approve first, pass ``draft=True`` to ``respond``, ``create``, ``update`` or ``cancel``: nothing
+is sent, the result's ``draft`` waits in the dashboard's Approvals (or ``drafts.send``), and the meeting changes
+when it is sent. That needs ``drafts:write`` instead of ``messages:send``.
+
+```python
+saved = mr.calendar.respond(event["id"], "declined", comment="Out that week", draft=True)
+print(saved["draft"]["id"], saved["draft"]["calendar"])  # {"action": "respond", "method": "REPLY", ...}
 ```
 
 ### Documents: attachment text and invoices
@@ -384,12 +420,17 @@ def mail_hook():
     ):
         abort(401)
     event = request.get_json()
-    if event["type"] == "message.received":
-        handle(event["data"]["message"])
-    elif event["type"] == "message.enriched":  # same payload, with ai.category / ai.risk filled in
-        route(event["data"]["message"])
+    if event["type"] in ("message.received", "message.enriched", "message.released"):
+        message = event["data"]["message"]
+        if "withheld" not in message:  # not screened yet, or held: a later event brings the content
+            handle(message)  # once per message id: more than one of these events can carry it
     return "", 204
 ```
+
+In a workspace that screens agent mail (the default for new ones), a message's content is withheld from
+events until it is screened or released: `message.received` then has `withheld` on the message, and the
+content comes with `message.enriched` or `message.released`
+([what an API key gets](https://agentboxd.com/docs/api#screening-reads)).
 
 **FastAPI**
 

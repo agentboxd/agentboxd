@@ -15,7 +15,7 @@ updates:
         update-types: [minor, patch]
 
   - package-ecosystem: pip
-    directories: ["/sdk-python", "/examples/guides/crewai-email-agent", "/examples/guides/langchain-email-tool", "/examples/guides/openai-agents-sdk-email"]
+    directories: ["/sdk-python", "/.github", "/examples/guides/crewai-email-agent", "/examples/guides/langchain-email-tool", "/examples/guides/openai-agents-sdk-email"]
     schedule: { interval: weekly, day: monday, time: "06:00", timezone: Europe/Paris }
     open-pull-requests-limit: 3
     labels: [dependencies]

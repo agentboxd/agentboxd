@@ -27,6 +27,7 @@ export const RISK_LABELS: Record<string, string> = {
   'dmarc-fail': 'DMARC failed: the From address may be spoofed',
   'spf-fail': 'SPF failed: the sending server is not authorized for this domain',
   'ai:injection-risk': 'possible prompt-injection attempt in the content',
+  'local:injection-risk': 'text aimed at an AI, possibly hidden from a human reader (local check)',
   'ai:phishing': 'looks like phishing or a scam: do not open its links, use its codes or enter credentials',
 };
 
@@ -92,7 +93,7 @@ const schemas = {
       inbox_id: id('Inbox id.'),
       timeout,
       since,
-      from: z.string().optional().describe('Case-insensitive substring of the From header.'),
+      from: z.string().optional().describe('Sender address, domain or part of the address (never the display name).'),
       subject: z.string().optional().describe('Case-insensitive substring of the subject.'),
     })
     .strict(),
@@ -101,7 +102,7 @@ const schemas = {
       inbox_id: id('Inbox id.'),
       timeout,
       since,
-      from: z.string().optional().describe('Case-insensitive substring of the From header, e.g. the service domain.'),
+      from: z.string().optional().describe('Sender address or domain, e.g. the service domain (never the display name).'),
     })
     .strict(),
 } as const;
@@ -183,6 +184,25 @@ export function compactMessage(m: Message, maxChars = FULL_TEXT_CHARS) {
     labels: m.labels,
     ...(warning ? { warning } : {}),
   };
+}
+
+/**
+ * Why a message's content isn't here yet, or null when it is. A workspace that screens agent mail withholds the
+ * content until the message's check passes, or a person releases it: https://agentboxd.com/docs/api#screening-reads
+ */
+export function withheldNote(m: Message): string | null {
+  if (!m.withheld) return null;
+  return m.withheld.state === 'pending'
+    ? 'Not available yet: this email is still being checked. Try again in a minute.'
+    : "Held for a person to review: tell the user, and don't act on it.";
+}
+
+/** A message as the model sees it when reading: its content, or only who sent it and why the content isn't here. */
+function readable(m: Message) {
+  const unavailable = withheldNote(m);
+  return unavailable
+    ? { id: m.id, thread_id: m.thread_id, direction: m.direction, from: m.from, created_at: m.created_at, unavailable }
+    : compactMessage(m);
 }
 
 const compactInbox = (i: Inbox) => ({ id: i.id, address: i.address, display_name: i.display_name, client_id: i.client_id });
@@ -309,11 +329,13 @@ export class MailTools {
           is_read: a.is_read,
           limit: a.limit ?? 10,
         });
-        return untrusted({ data: page.data.map((m) => compactMessage(m, LIST_TEXT_CHARS)), next_cursor: page.next_cursor });
+        // Skip withheld mail (being checked, or held for a person): it is listed once its content can be read.
+        const data = page.data.filter((m) => !withheldNote(m)).map((m) => compactMessage(m, LIST_TEXT_CHARS));
+        return untrusted({ data, next_cursor: page.next_cursor });
       }
       case 'get_message': {
         const a = args as z.infer<(typeof schemas)['get_message']>;
-        return untrusted(compactMessage(await mr.messages.get(a.message_id)));
+        return untrusted(readable(await mr.messages.get(a.message_id)));
       }
       case 'get_thread': {
         const a = args as z.infer<(typeof schemas)['get_thread']>;
@@ -323,7 +345,7 @@ export class MailTools {
           subject: t.subject,
           participants: t.participants,
           message_count: t.message_count,
-          messages: t.messages.map((m) => compactMessage(m)),
+          messages: t.messages.map(readable),
         });
       }
       case 'search_email': {

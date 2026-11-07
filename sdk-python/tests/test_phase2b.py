@@ -53,6 +53,38 @@ def test_contact_update_merge_and_nulls(client: Agentboxd, rec: Recorder) -> Non
     client.contacts.update("c_1", remove_labels=("vip",))
     assert rec.last_json() == {"remove_labels": ["vip"]}
 
+    client.contacts.update("c_1", kind="sales")
+    assert rec.last_json() == {"kind": "sales"}
+
+
+def test_contacts_v2_requests(client: Agentboxd, rec: Recorder) -> None:
+    rec.reply({"data": [], "next_cursor": None})
+    client.contacts.list(kind=["person", "unknown"], domain="acme.com")
+    assert rec.last_params() == {"kind": "person,unknown", "domain": "acme.com"}
+    client.contacts.list(kind="sales")
+    assert rec.last_params() == {"kind": "sales"}
+
+    rec.reply({"data": [{"domain": "acme.com", "contacts": 3, "last_seen_at": None}]})
+    out = client.contacts.domains(kind="person", limit=20)
+    assert rec.last.method == "GET" and rec.last.url.path == "/v1/contacts/domains"
+    assert rec.last_params() == {"kind": "person", "limit": "20"}
+    assert out["data"][0]["contacts"] == 3
+
+    rec.reply(None, status=204)
+    client.contacts.delete("c_1", forget=True)
+    assert rec.last.method == "DELETE" and rec.last.url.path == "/v1/contacts/c_1"
+    assert rec.last_params() == {"forget": "true"}
+    client.contacts.delete("c_1")
+    assert rec.last_params() == {}
+
+    rec.reply({"matched": 2, "deleted": 0, "forgotten": 0, "has_more": False, "dry_run": True})
+    res = client.contacts.delete_many(kind=["automated", "sales"], dry_run=True)
+    assert rec.last.method == "POST" and rec.last.url.path == "/v1/contacts/delete"
+    assert rec.last_json() == {"kind": ["automated", "sales"], "dry_run": True}
+    assert res["matched"] == 2
+    client.contacts.delete_many(domain="acme.com", forget=True)
+    assert rec.last_json() == {"domain": "acme.com", "forget": True}
+
 
 def test_inbox_and_thread_metadata(client: Agentboxd, rec: Recorder) -> None:
     client.inboxes.create(client_id="c", metadata={"team": "billing"})

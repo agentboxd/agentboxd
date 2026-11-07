@@ -7,11 +7,10 @@
  *                     workspace; the key stays in memory unless --save-key names a file to keep it in.
  */
 import { readFileSync } from 'node:fs';
-import { createServer as createHttpServer } from 'node:http';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Agentboxd } from '../../sdk/src/index.js';
 import { ConfigError, loadConfig, type Config } from './config.js';
+import { createLocalHttpServer } from './localHttp.js';
 import { createAgentboxdMcpServer, SERVER_VERSION, type ClientRef, type ServerOptions } from './server.js';
 
 async function runStdio(client: ClientRef, opts: ServerOptions): Promise<void> {
@@ -22,41 +21,7 @@ async function runStdio(client: ClientRef, opts: ServerOptions): Promise<void> {
 
 async function runHttp(client: ClientRef, opts: ServerOptions, config: Config): Promise<void> {
   const port = config.httpPort!;
-  const http = createHttpServer(async (req, res) => {
-    const path = new URL(req.url ?? '/', 'http://localhost').pathname;
-    if (path !== '/mcp') {
-      res.writeHead(404, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'Use /mcp' }));
-      return;
-    }
-    if (req.method !== 'POST') {
-      // Stateless mode: no server-initiated SSE stream or sessions to delete.
-      res.writeHead(405, { Allow: 'POST', 'Content-Type': 'application/json' }).end(
-        JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null }),
-      );
-      return;
-    }
-    try {
-      const chunks: Buffer[] = [];
-      for await (const chunk of req) chunks.push(chunk as Buffer);
-      const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null');
-      // Stateless: a fresh server + transport per request.
-      const server = createAgentboxdMcpServer(client, opts);
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      res.on('close', () => {
-        void transport.close();
-        void server.close();
-      });
-      await server.connect(transport);
-      await transport.handleRequest(req, res, body);
-    } catch (err) {
-      console.error('HTTP request failed:', err);
-      if (!res.headersSent) {
-        res.writeHead(400, { 'Content-Type': 'application/json' }).end(
-          JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'Invalid request' }, id: null }),
-        );
-      }
-    }
-  });
+  const http = createLocalHttpServer(client, opts, config);
   await new Promise<void>((resolve) => http.listen(port, config.httpHost, resolve));
   console.error(`agentboxd-mcp ${SERVER_VERSION} listening on http://${config.httpHost}:${port}/mcp`);
 }

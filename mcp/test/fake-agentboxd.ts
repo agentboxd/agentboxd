@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { Draft, Inbox, Message } from '../../sdk/src/index.js';
+import type { CalendarEvent, Draft, Inbox, Message } from '../../sdk/src/index.js';
 
 export const API_KEY = 'test-key';
 
@@ -46,6 +46,62 @@ export function makeMessage(over: Partial<Message> = {}): Message {
     ...over,
   };
 }
+
+/** A meeting invite read into a calendar event (src/calendar/serialize.ts), as an agent sees it once screened. */
+export function makeEvent(over: Partial<CalendarEvent> = {}): CalendarEvent {
+  return {
+    id: 'evt_1',
+    inbox_id: inbox.id,
+    uid: '0a1b2c3d@google.com',
+    recurrence_id: null,
+    sequence: 0,
+    role: 'attendee',
+    status: 'confirmed',
+    response: 'needs_action',
+    responded_at: null,
+    reply_expected: true,
+    title: 'Onboarding plan sync',
+    description: 'Quick sync on the onboarding plan, agenda in the shared doc.',
+    location: null,
+    url: null,
+    conference: { provider: 'google_meet', url: 'https://meet.google.com/abc-defg-hij' },
+    start: '2026-11-10T15:00:00.000Z',
+    end: '2026-11-10T15:30:00.000Z',
+    all_day: false,
+    time_zone: null,
+    floating: false,
+    recurrence: null,
+    organizer: { email: 'alex@example.com', name: 'Alex Example' },
+    organizer_verified: true,
+    attendees: [
+      { email: 'alex@example.com', name: 'Alex Example', role: 'req_participant', partstat: 'accepted', rsvp: true },
+      { email: inbox.address, name: null, role: 'req_participant', partstat: 'needs_action', rsvp: true },
+    ],
+    proposals: [],
+    source: 'invite',
+    message_id: 'msg_1',
+    screening: { state: 'screened', reason: null, released_at: null },
+    created_at: '2026-11-04T10:00:00.000Z',
+    updated_at: '2026-11-04T10:00:00.000Z',
+    ...over,
+  };
+}
+
+/** One of the inbox's own meetings (role organizer). */
+export const ownMeeting = (over: Partial<CalendarEvent> = {}) =>
+  makeEvent({
+    id: 'evt_own',
+    role: 'organizer',
+    response: null,
+    reply_expected: false,
+    title: 'Kickoff',
+    organizer: { email: inbox.address, name: 'Agent' },
+    attendees: [{ email: 'dana@example.com', name: 'Dana', role: 'req_participant', partstat: 'needs_action', rsvp: true }],
+    source: 'agent',
+    message_id: null,
+    screening: null,
+    ...over,
+  });
 
 /** A native agent card (docs/asim-directory-contract.md §2.3). */
 export function agentCard(address: string) {
@@ -194,9 +250,15 @@ export async function startFakeAgentboxd(): Promise<FakeAgentboxd> {
       });
     }
     if (key === 'GET /v1/inboxes/inb_1/messages') return send(200, { data: [makeMessage()], next_cursor: null });
+    if (key === 'GET /v1/messages') return send(200, { data: [makeMessage(), makeMessage({ id: 'msg_2', inbox_id: 'inb_2' })], next_cursor: null });
     if ((m = p.match(/^\/v1\/messages\/([^/]+)$/)) && req.method === 'GET') {
       if (m[1] === 'missing') return send(404, { error: { code: 'not_found', message: 'Message not found' } });
       return send(200, makeMessage({ id: m[1] }));
+    }
+    if (key === 'POST /v1/messages/batch-update') {
+      const b = body as { ids: string[]; is_read?: boolean };
+      const found = b.ids.filter((id) => id !== 'missing');
+      return send(200, { data: found.map((id) => makeMessage({ id, ...(b.is_read === undefined ? {} : { is_read: b.is_read }) })), missing: b.ids.filter((id) => id === 'missing') });
     }
     if (key === 'GET /v1/threads/thr_1') {
       return send(200, {
@@ -221,6 +283,11 @@ export async function startFakeAgentboxd(): Promise<FakeAgentboxd> {
       first_seen_at: '2026-09-20T10:00:00.000Z',
       last_seen_at: '2026-09-24T10:01:00.000Z',
       created_at: '2026-09-20T10:00:00.000Z',
+      kind: 'automated',
+      kind_source: 'auto',
+      name_source: 'auto',
+      domain: 'acme.com',
+      last_subject: 'Your code',
     };
     const recent_threads = [
       {
@@ -239,8 +306,17 @@ export async function startFakeAgentboxd(): Promise<FakeAgentboxd> {
       return send(200, { ...contact, recent_threads });
     }
     if (key === 'PATCH /v1/contacts/con_1') {
-      const b = body as { notes?: string; metadata?: Record<string, unknown> };
-      return send(200, { ...contact, ...(b.notes !== undefined ? { notes: b.notes } : {}), metadata: { ...contact.metadata, ...b.metadata } });
+      const b = body as { notes?: string; metadata?: Record<string, unknown>; kind?: string };
+      return send(200, {
+        ...contact,
+        ...(b.notes !== undefined ? { notes: b.notes } : {}),
+        ...(b.kind !== undefined ? { kind: b.kind, kind_source: 'manual' } : {}),
+        metadata: { ...contact.metadata, ...b.metadata },
+      });
+    }
+    if (key === 'DELETE /v1/contacts/con_1') {
+      res.writeHead(204).end();
+      return;
     }
     if (key === 'GET /v1/knowledge/search') {
       return send(200, { data: [{ id: 'kn_1', title: 'Refund policy', inbox_id: null, rank: 0.8, snippet: 'Full **refund** within 30 days' }] });
@@ -283,6 +359,9 @@ export async function startFakeAgentboxd(): Promise<FakeAgentboxd> {
         truncated: false,
         untrusted: true,
       });
+    }
+    if (key === 'GET /v1/suppressions') {
+      return send(200, { data: [{ address: 'gone@example.org', reason: 'bounce', created_at: '2026-09-30T08:00:00.000Z', expires_at: null }], next_cursor: null });
     }
     if (key === 'GET /v1/deliverability') {
       const w = { sent: 40, bounced: 1, complained: 0, bounce_rate: 0.025, complaint_rate: 0 };
@@ -335,7 +414,7 @@ export async function startFakeAgentboxd(): Promise<FakeAgentboxd> {
     if (key === 'GET /v1/escalation' || key === 'PUT /v1/escalation') {
       return send(200, {
         contacts: [{ email: 'ops@example.com', status: 'pending', confirmed_at: null }],
-        triggers: { needs_human: true, phishing: true, blocked: false, draft_failed: true, emergency_stop: true },
+        triggers: { needs_human: true, phishing: true, blocked: false, draft_failed: true, emergency_stop: true, held: true, draft_created: false },
         delivery: 'immediate',
         max_per_hour: 10,
         quiet_hours: null,
@@ -385,6 +464,25 @@ export async function startFakeAgentboxd(): Promise<FakeAgentboxd> {
         limits: { inboxes: 1, custom_domains: 0 },
         restrictions: { recipients_per_day: 20, recipients_today: 3 },
       });
+    }
+    // ---- meetings (calendar) ----
+    if (key === 'GET /v1/inboxes/inb_1/calendar/events' || key === 'GET /v1/calendar/events') {
+      return send(200, { data: [makeEvent(), ownMeeting()], next_cursor: null });
+    }
+    if (key === 'GET /v1/calendar/events/evt_1') return send(200, makeEvent());
+    const meetingMail = (to: string[], subject: string) =>
+      makeMessage({ id: 'msg_cal', direction: 'outbound', status: 'queued', from: inbox.address, to, subject, received_at: null });
+    if (key === 'POST /v1/calendar/events/evt_1/respond') {
+      const b = body as { response: 'accepted' | 'declined' | 'tentative' };
+      return send(202, { event: makeEvent({ response: b.response, responded_at: '2026-11-04T11:00:00.000Z' }), message: meetingMail(['alex@example.com'], 'Accepted: Onboarding plan sync') });
+    }
+    if (key === 'POST /v1/inboxes/inb_1/calendar/events') {
+      const b = body as { title: string };
+      return send(201, { event: ownMeeting({ title: b.title }), message: meetingMail(['dana@example.com'], `Invitation: ${b.title}`) });
+    }
+    if (key === 'PATCH /v1/calendar/events/evt_own') return send(200, { event: ownMeeting({ sequence: 1 }), message: meetingMail(['dana@example.com'], 'Updated invitation: Kickoff') });
+    if (key === 'POST /v1/calendar/events/evt_own/cancel') {
+      return send(200, { event: ownMeeting({ status: 'cancelled', sequence: 1 }), message: meetingMail(['dana@example.com'], 'Cancelled: Kickoff') });
     }
     if (key === 'POST /v1/signup/claim') return send(202, { status: 'email_sent', email: 'o***@example.com', expires_at: '2026-09-27T10:00:00.000Z' });
     return send(404, { error: { code: 'not_found', message: `No fake route for ${key}` } });

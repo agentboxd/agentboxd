@@ -14,7 +14,7 @@ from collections.abc import Awaitable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, Union
 
 from ._errors import (
     AgentboxdError,
@@ -72,6 +72,9 @@ class ConsumeOptions:
     wait: float = DEFAULT_WAIT
     consumer: Optional[str] = None
     enriched: Optional[bool] = None
+    analysis: Optional[Literal["completed"]] = None
+    include_unscreened: Optional[bool] = None
+    include_held: Optional[bool] = None
     retry_delay_seconds: float = 5
     max_retry_delay_seconds: float = 300
     paused_poll_seconds: float = 10
@@ -180,6 +183,9 @@ def consume_sync(
                     wait=opts.wait,
                     consumer=opts.consumer,
                     enriched=opts.enriched,
+                    analysis=opts.analysis,
+                    include_unscreened=opts.include_unscreened,
+                    include_held=opts.include_held,
                 )
                 failures = 0
             except _FATAL:
@@ -283,6 +289,9 @@ async def consume_async(
                 wait=opts.wait,
                 consumer=opts.consumer,
                 enriched=opts.enriched,
+                analysis=opts.analysis,
+                include_unscreened=opts.include_unscreened,
+                include_held=opts.include_held,
             )
             failures = 0
         except _FATAL:

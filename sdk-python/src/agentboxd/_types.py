@@ -7,6 +7,7 @@ __all__ = [
     "Account",
     "AccountClaim",
     "AckResult",
+    "AddAgentResult",
     "AgentAssurance",
     "AgentBundle",
     "AgentCard",
@@ -29,6 +30,25 @@ __all__ = [
     "BounceReason",
     "BuiltinExtractionSchema",
     "BusiestDay",
+    "CalendarAnswer",
+    "CalendarAttendee",
+    "CalendarAttendeeInput",
+    "CalendarCancelDraftResult",
+    "CalendarCancelResult",
+    "CalendarConference",
+    "CalendarDraftResult",
+    "CalendarEvent",
+    "CalendarEventPage",
+    "CalendarEventResult",
+    "CalendarEventRole",
+    "CalendarEventStatus",
+    "CalendarMethod",
+    "CalendarPartstat",
+    "CalendarPerson",
+    "CalendarProposal",
+    "CalendarRecurrence",
+    "CalendarResponse",
+    "CalendarWithheld",
     "ClaimRequestResult",
     "Contact",
     "ContactWithThreads",
@@ -41,8 +61,11 @@ __all__ = [
     "DomainRecord",
     "DomainRecordKey",
     "DomainStatus",
+    "DomainZoneFile",
     "Draft",
+    "DraftApprover",
     "DraftAttachment",
+    "DraftCalendar",
     "DraftCitation",
     "DraftError",
     "DraftKeep",
@@ -85,16 +108,21 @@ __all__ = [
     "Message",
     "MessageAgent",
     "MessageAi",
+    "MessageAnalysis",
+    "MessageApproval",
     "MessageAuthor",
+    "MessageCalendar",
     "MessageCategory",
     "MessageCategoryInfo",
     "MessageChannel",
     "MessageDelivery",
     "MessageEventData",
     "MessageRisk",
+    "MessageScreening",
     "MessageStatus",
     "MessageType",
     "MessageUrgency",
+    "MessageWithheld",
     "Metadata",
     "MetadataValue",
     "MetricCounts",
@@ -113,6 +141,8 @@ __all__ = [
     "QuietHours",
     "ResolvedAgent",
     "Resources",
+    "ScreeningReason",
+    "ScreeningState",
     "SearchResult",
     "SignupChallenge",
     "SignupClaim",
@@ -122,6 +152,8 @@ __all__ = [
     "StreamEvent",
     "StreamToken",
     "StructuredExtraction",
+    "Suppression",
+    "SuppressionReason",
     "Thread",
     "ThreadWithMessages",
     "UnclaimedRestrictions",
@@ -130,6 +162,8 @@ __all__ = [
     "VerificationResult",
     "Webhook",
     "WebhookCatalogEntry",
+    "WebhookDelivery",
+    "WebhookDeliveryStatus",
     "WebhookEvent",
     "WebhookEventType",
     "WebhookPayload",
@@ -159,6 +193,7 @@ WebhookEventType = Literal[
     "message.bounced",
     "message.complained",
     "message.enriched",
+    "message.released",
     "inbox.expired",
     "message.received.blocked",
     "draft.created",
@@ -176,6 +211,8 @@ WebhookEventType = Literal[
     "inbox.resumed",
     "domain.dkim_rotated",
     "domain.dkim_rotation_due",
+    "domain.verified",
+    "domain.failed",
     "connector.authorized",
     "connector.revoked",
     "workspace.stopped",
@@ -185,6 +222,17 @@ WebhookEventType = Literal[
     "agent.revoked",
     "agent.deleted",
     "agent.reported",
+    "member.invited",
+    "member.invite_revoked",
+    "member.joined",
+    "member.role_changed",
+    "member.removed",
+    "suppression.removed",
+    "calendar.invite.received",
+    "calendar.event.created",
+    "calendar.event.updated",
+    "calendar.event.cancelled",
+    "calendar.response.received",
 ]
 
 WebhookPayload = Literal["full", "envelope"]
@@ -234,6 +282,17 @@ class Inbox(_InboxBase, total=False):
     """``paused``: sends are refused (423 ``inbox_paused``) and inbound events are held until resume."""
     paused_at: Optional[str]
     paused_reason: Optional[str]
+    promotions_filter: bool
+    """Promotions & spam view: the dashboard shows mail labelled ``ai:sales`` or ``local:spam`` apart. On by
+    default for role addresses (hello@, support@, security@, ...)."""
+    held_count: int
+    """Screening: held mail nobody has opened yet."""
+    pending_draft_count: int
+    """Drafts waiting for a person: to approve (``draft``) or refused at their send time (``failed``)."""
+    needs_human_count: int
+    """Unread received mail labelled ``ai:needs-human``."""
+    recent_bounce_count: int
+    """Sent messages that bounced in the last 7 days."""
 
 
 class ResumedInbox(Inbox, total=False):
@@ -262,6 +321,42 @@ class DomainRecord(_DomainRecordBase, total=False):
 
     found: list[str]
     """What was found in DNS for this name."""
+    host: str
+    """The part of ``name`` to type at DNS providers that add the zone themselves (``@`` = the zone)."""
+    hint: Literal["full_name_in_host"]
+    """Missing, but published at ``<name>.<zone>``: the full name went into a host field.
+    Rename it to ``host``."""
+
+
+class InboxForward(TypedDict):
+    """An automatic forwarding address of an inbox. Nothing is forwarded until it confirms by email."""
+
+    id: str
+    inbox_id: str
+    address: str
+    status: Literal["pending", "confirmed"]
+    skip_flagged: bool
+    """Skip mail flagged as phishing, prompt injection or failing DMARC (default True)."""
+    confirmed_at: Optional[str]
+    confirmation_sent_at: Optional[str]
+    last_forwarded_at: Optional[str]
+    forwarded_count: int
+    created_at: str
+
+
+class DomainDnsProvider(TypedDict):
+    id: str
+    name: str
+
+
+class DomainDns(TypedDict):
+    """Where a custom domain's DNS is hosted, from its NS records."""
+
+    zone: str
+    nameservers: list[str]
+    provider: Optional[DomainDnsProvider]
+    """A known DNS provider (``cloudflare``, ``godaddy``, ``route53``, ...), or None."""
+    checked_at: str
 
 
 class DkimNext(TypedDict):
@@ -304,6 +399,17 @@ class Domain(_DomainBase, total=False):
 
     dkim: DomainDkim
     """DKIM key rotation state (optional for older servers)."""
+    dns: Optional[DomainDns]
+    """Where the domain's DNS is hosted; None until found (optional for older servers)."""
+
+
+class DomainZoneFile(TypedDict):
+    """A domain's DNS records as a BIND zone file, for DNS providers that import one."""
+
+    filename: str
+    """Suggested file name, e.g. ``mail.acme.com.zone.txt``."""
+    content: str
+    """The zone-file text: one line per record to publish, with fully qualified names."""
 
 
 ExtractionStatus = Literal["pending", "done", "failed", "skipped"]
@@ -385,9 +491,7 @@ class AttachmentInput(TypedDict):
     content_base64: str
 
 
-class VerificationInfo(TypedDict):
-    """Login/verification code or magic link found in a message."""
-
+class _VerificationInfoBase(TypedDict):
     code: Optional[str]
     """One-time code (4-10 chars, digits or alphanumeric), if found."""
     link: Optional[str]
@@ -396,6 +500,14 @@ class VerificationInfo(TypedDict):
     """0-1. Regex-only detection is capped at 0.7; JEV confirmation raises or lowers it."""
     jev_probability: Optional[float]
     """JEV's probability that this is a verification/login email, once enrichment has run."""
+
+
+class VerificationInfo(_VerificationInfoBase, total=False):
+    """Login/verification code or magic link found in a message."""
+
+    auth_failed: bool
+    """The sender failed authentication (DMARC, or SPF without aligned DKIM): the code may come from a
+    spoofer. Don't use it unless you just asked for one. Absent on older servers."""
 
 
 class MessageCategoryInfo(TypedDict):
@@ -448,13 +560,103 @@ class MessageAi(_MessageAiBase, total=False):
     """Engine that produced the fields above (``"jev"``)."""
     enriched_at: str
     """When enrichment finished (ISO 8601)."""
+    analysis_coverage: Literal["full", "partial"]
+    """Whether enrichment read the whole message. Prefer ``message["analysis"]``."""
     enrichment_error: str
     """Set when enrichment gave up after retries; the message is otherwise unaffected."""
+    enrichment_skipped: Literal["quota", "ai_off", "not_available"]
+    """Why enrichment didn't run. Prefer ``message["analysis"]``."""
+    local_screen: "LocalScreen"
+    """The local injection check (no AI, every received message since Screening v2)."""
+    local_spam: "LocalSpam"
+    """Why the message got ``local:spam``."""
+    released_at: str
+    """A held message released to agents: when. Prefer ``message["screening"]``."""
+    released_by: str
+    """Who released it: ``user:<id>`` or ``key:<id>``."""
+
+
+ScreeningState = Literal["screened", "pending", "held", "released"]
+ScreeningReason = Literal[
+    "ai_off",
+    "not_applicable",
+    "not_available",
+    "injection_risk",
+    "phishing",
+    "check_failed",
+    "quota",
+    "check_timed_out",
+    "blocked",
+    "partially_screened",
+]
+
+
+class MessageScreening(TypedDict):
+    """Whether agents get a received message.
+
+    When the workspace screens agent mail (the default for new workspaces), claim and ``wait`` return
+    only ``screened`` and ``released`` mail unless you pass ``include_unscreened`` / ``include_held``.
+    """
+
+    state: ScreeningState
+    reason: Optional[ScreeningReason]
+    """Why it is held, or why it counts as screened without a check (``ai_off``, ``not_available``,
+    ``not_applicable``)."""
+    released_at: Optional[str]
+
+
+class MessageWithheld(TypedDict):
+    """What was left out of a withheld message."""
+
+    state: ScreeningState
+    reason: Optional[ScreeningReason]
+    attachments: int
+
+
+class LocalScreenReason(TypedDict, total=False):
+    code: str
+    weight: float
+    where: Literal["visible", "hidden", "beyond_window", "attachment"]
+    detail: str
+
+
+class LocalScreen(TypedDict):
+    """The local injection check: no AI, run on every received message. It reads the whole message,
+    including HTML text hidden from a human reader. At ``score`` 0.6 or more the message gets
+    ``local:injection-risk``."""
+
+    score: float
+    flagged: bool
+    reasons: list[LocalScreenReason]
+    hidden_chars: int
+    """Characters of HTML text hidden from a sighted reader."""
+    complete: bool
+    """False when some text was too long to scan in full."""
+    version: int
+
+
+class LocalSpam(TypedDict):
+    reasons: list[str]
+
+
+class MessageAnalysis(TypedDict):
+    """Whether a received message was checked for prompt injection and phishing, and how much of it.
+
+    A message without an ``ai:injection-risk`` or ``ai:phishing`` label is only known to be clean when
+    ``state`` is ``"completed"`` and ``coverage`` is ``"full"``.
+    """
+
+    state: Literal["pending", "completed", "skipped", "failed"]
+    coverage: Optional[Literal["full", "partial"]]
+    """Completed only. ``partial``: some of the message wasn't read (a long body or data, attachment text
+    cut or not extracted)."""
+    reason: Optional[Literal["quota", "ai_off", "not_available", "blocked", "not_applicable"]]
+    """Skipped only."""
 
 
 # ``from`` is a Python keyword, so these use the functional TypedDict syntax.
-VerificationResult = TypedDict(
-    "VerificationResult",
+_VerificationResultBase = TypedDict(
+    "_VerificationResultBase",
     {
         "code": Optional[str],
         "link": Optional[str],
@@ -466,6 +668,14 @@ VerificationResult = TypedDict(
         "received_at": Optional[str],
     },
 )
+
+
+class VerificationResult(_VerificationResultBase, total=False):
+    """``GET /v1/inboxes/{id}/verification``: the newest code or link and the message it came from."""
+
+    auth_failed: bool
+    """Only ``True`` with ``include_unauthenticated=True``: the sender failed authentication."""
+
 
 _MessageBase = TypedDict(
     "_MessageBase",
@@ -488,6 +698,9 @@ _MessageBase = TypedDict(
         "html": Optional[str],
         # The new content of the message only: quoted history and signatures removed.
         "extracted_text": Optional[str],
+        # text, html and extracted_text were cut (a list, search, thread, claim or batch-get):
+        # messages.get() has all of it.
+        "body_truncated": bool,
         "headers": dict[str, Union[str, list[str]]],
         "labels": list[str],
         "is_read": bool,
@@ -564,6 +777,21 @@ class AiDisclosure(TypedDict):
     header: str
 
 
+CalendarMethod = Literal[
+    "REQUEST", "CANCEL", "REPLY", "COUNTER", "DECLINECOUNTER", "PUBLISH", "REFRESH", "ADD"
+]
+"""iTIP methods (RFC 5546) a calendar message can carry."""
+
+
+class MessageCalendar(TypedDict):
+    """Meetings: the meeting a message's invite, update, answer or cancellation is about."""
+
+    event_id: Optional[str]
+    """The meeting the message created or changed: read it with ``calendar.get(event_id)``. None when it
+    changed none (an older version of the invite, or a sender who can't speak for the organizer)."""
+    method: CalendarMethod
+
+
 class Message(_MessageBase, total=False):
     contact_id: Optional[str]
     """Inbound: the sender's contact. Outbound: the first recipient that is a contact."""
@@ -578,8 +806,207 @@ class Message(_MessageBase, total=False):
     """Inbound agent-channel copies only."""
     author: Optional[MessageAuthor]
     """The agent's own author signature (outbound rows and inbound agent copies), or None."""
+    approval: Optional["MessageApproval"]
+    """Sent from a draft: who approved it, when, and the content hash it covered.
+    Kept after the draft is deleted."""
     ai_disclosure: Optional[AiDisclosure]
     """AI disclosure: what was disclosed (outbound) or the sender's header (inbound). None when absent."""
+    analysis: Optional[MessageAnalysis]
+    """Received mail: whether it was checked for prompt injection and phishing. None for sent mail."""
+    screening: Optional["MessageScreening"]
+    """Received mail: whether agents get it (screened, pending, held, released). None for sent mail."""
+    withheld: "MessageWithheld"
+    """Set when the content was withheld from this key (held or not screened yet): subject, text, html,
+    headers, attachments, data and the detected code are left out unless you opt in."""
+    auto_reply: bool
+    """Received mail: an automatic reply (out of office and the like), from its headers or the
+    ``ai:auto-reply`` label. Don't answer it. False for sent mail."""
+    calendar: Optional[MessageCalendar]
+    """Meetings: set on a message that carries a meeting: an invite once it is read, and every
+    answer, invitation, change and cancellation the inbox sends. None for other messages, for an invite not
+    read yet (so None in ``message.received``; ``calendar.invite.received`` follows) and while the message
+    is withheld. Absent on older servers."""
+
+
+# ---------- meetings (calendar, beta) ----------
+
+CalendarEventRole = Literal["attendee", "organizer"]
+"""``attendee``: the inbox was invited (read from an invite it received). ``organizer``: the inbox sent it."""
+CalendarEventStatus = Literal["tentative", "confirmed", "cancelled"]
+CalendarResponse = Literal["needs_action", "accepted", "declined", "tentative"]
+"""The inbox's own answer to an invite (attendee events)."""
+CalendarAnswer = Literal["accepted", "declined", "tentative"]
+"""What ``calendar.respond`` sends."""
+CalendarPartstat = Literal["needs_action", "accepted", "declined", "tentative", "delegated"]
+
+
+class CalendarPerson(TypedDict):
+    email: str
+    name: Optional[str]
+    """None when the invite gave none, or while the invite is withheld."""
+
+
+class _CalendarAttendeeBase(TypedDict):
+    email: str
+    name: Optional[str]
+    role: Optional[str]
+    """``req_participant``, ``opt_participant``, ``chair``, ``non_participant``, or None."""
+    partstat: CalendarPartstat
+    rsvp: bool
+
+
+class CalendarAttendee(_CalendarAttendeeBase, total=False):
+    responded_at: Optional[str]
+    """Organizer events: when this attendee's last answer was applied."""
+
+
+CalendarProposal = TypedDict(
+    "CalendarProposal",
+    {"from": str, "start": str, "end": str, "message_id": str, "received_at": str},
+)
+"""A new time an attendee proposed (an iTIP COUNTER) for one of the inbox's own meetings."""
+
+
+class CalendarConference(TypedDict):
+    """A join link, only for links on known video meeting hosts."""
+
+    provider: str
+    url: str
+
+
+class CalendarRecurrence(TypedDict):
+    """A series: its RRULE (None when it only has extra dates), extra dates and left-out dates.
+    ``calendar.list(..., expand="occurrences")`` lists the occurrences."""
+
+    rrule: Optional[str]
+    rdates: list[str]
+    exdates: list[str]
+
+
+class CalendarWithheld(TypedDict):
+    """Why an event's content was left out (its invite is held or not screened yet)."""
+
+    state: ScreeningState
+    reason: Optional[ScreeningReason]
+
+
+class _CalendarEventBase(TypedDict):
+    id: str
+    inbox_id: str
+    uid: str
+    recurrence_id: Optional[str]
+    sequence: int
+    role: CalendarEventRole
+    status: CalendarEventStatus
+    response: Optional[CalendarResponse]
+    """The inbox's answer (attendee events); None for its own meetings."""
+    responded_at: Optional[str]
+    reply_expected: bool
+    """False for a published calendar entry (nothing to answer)."""
+    title: Optional[str]
+    description: Optional[str]
+    location: Optional[str]
+    url: Optional[str]
+    conference: Optional[CalendarConference]
+    start: str
+    """UTC."""
+    end: str
+    all_day: bool
+    time_zone: Optional[str]
+    floating: bool
+    """The invite's times had no usable time zone and were read as UTC."""
+    recurrence: Optional[CalendarRecurrence]
+    organizer: CalendarPerson
+    organizer_verified: bool
+    """An authenticated sender vouches for the organizer (DMARC pass and a matching domain or a calendar
+    service)."""
+    attendees: list[CalendarAttendee]
+    proposals: list[CalendarProposal]
+    source: str
+    """``invite`` (read from mail) or ``agent`` (the inbox created it)."""
+    message_id: Optional[str]
+    """The invite message the content came from; None for the inbox's own meetings."""
+    screening: Optional[MessageScreening]
+    created_at: str
+    updated_at: str
+
+
+class CalendarEvent(_CalendarEventBase, total=False):
+    """A meeting known to an inbox. An invite is untrusted input like the email it came in: title,
+    description, location and names are written by its sender."""
+
+    withheld: CalendarWithheld
+    """Set when the content was withheld from this key (the invite is held or not screened yet): it can't
+    be answered until a person releases the invite."""
+    series_id: Optional[str]
+    """Only in a list with ``expand="occurrences"``: the series this occurrence belongs to (None for a
+    single meeting). An occurrence keeps the series' ``id`` (respond, update and cancel act on the whole
+    series) and has its own ``start``, ``end`` and ``recurrence_id``."""
+
+
+class _CalendarEventPageBase(TypedDict):
+    data: list[CalendarEvent]
+    next_cursor: Optional[str]
+
+
+class CalendarEventPage(_CalendarEventPageBase, total=False):
+    """A page of ``calendar.list`` / ``calendar.list_all``. Pass ``next_cursor`` as ``cursor`` to continue."""
+
+    truncated: bool
+    """With ``expand="occurrences"`` only: True when a series had more occurrences in the window than one
+    list gives (500), or a rule too costly to follow. Ask for a shorter window."""
+
+
+class _CalendarAttendeeInputBase(TypedDict):
+    email: str
+
+
+class CalendarAttendeeInput(_CalendarAttendeeInputBase, total=False):
+    name: str
+    optional: bool
+    """An optional guest."""
+
+
+class _CalendarEventResultBase(TypedDict):
+    event: CalendarEvent
+    message: Message
+
+
+class CalendarEventResult(_CalendarEventResultBase, total=False):
+    """What ``respond``, ``create`` and ``update`` return: the event as it now is and the email sent."""
+
+    draft: None
+    """None: nothing was drafted (absent on older servers)."""
+
+
+class CalendarDraftResult(TypedDict):
+    """What ``respond``, ``create`` and ``update`` return with ``draft=True``: nothing was sent, and
+    ``draft`` waits for a person (``draft["calendar"]`` says what sending it does). ``event`` is the meeting
+    as it still is; None for a new meeting, which exists once the draft is sent (under
+    ``draft["calendar"]["event_id"]``)."""
+
+    event: Optional[CalendarEvent]
+    message: None
+    draft: "Draft"
+
+
+class _CalendarCancelResultBase(TypedDict):
+    event: CalendarEvent
+    message: Optional[Message]
+    """None when the meeting was already cancelled (nothing is sent)."""
+
+
+class CalendarCancelResult(_CalendarCancelResultBase, total=False):
+    draft: None
+
+
+class CalendarCancelDraftResult(TypedDict):
+    """What ``cancel`` returns with ``draft=True``. ``draft`` is None when the meeting was already cancelled
+    (nothing to draft)."""
+
+    event: CalendarEvent
+    message: None
+    draft: Optional["Draft"]
 
 
 class Lease(TypedDict):
@@ -648,9 +1075,28 @@ class ThreadWithMessages(Thread):
     messages: list[Message]
 
 
-class Contact(TypedDict):
-    """An external address the workspace has exchanged mail with (created automatically)."""
+class DeletedThread(TypedDict):
+    """``threads.delete``: what was removed."""
 
+    deleted: bool
+    messages: int
+    attachments: int
+
+
+class BatchMessages(TypedDict):
+    """``messages.batch_get`` / ``batch_update``: the messages, and ids you can't see."""
+
+    data: list[Message]
+    missing: list[str]
+
+
+ContactKind = Literal["person", "automated", "sales", "unknown"]
+"""Who is behind a contact. ``unknown`` until the AI category of their mail sorts it (sales and
+newsletters -> ``sales``, notifications and verification codes -> ``automated``, the rest -> ``person``);
+writing to an address makes it a ``person``."""
+
+
+class _ContactBase(TypedDict):
     id: str
     address: str
     name: Optional[str]
@@ -658,9 +1104,48 @@ class Contact(TypedDict):
     metadata: Metadata
     labels: list[str]
     message_count: int
+    """Messages involving the address (from it, or to/cc/bcc it)."""
     first_seen_at: str
     last_seen_at: str
     created_at: str
+
+
+class Contact(_ContactBase, total=False):
+    """An external address the workspace has exchanged mail with (created automatically; automated
+    senders never are). The keys below are always present on current servers."""
+
+    kind: ContactKind
+    kind_source: Literal["auto", "manual"]
+    """``manual`` once set with ``update(kind=...)``: later mail never changes it."""
+    name_source: Literal["auto", "manual"]
+    """``manual`` once set with ``update(name=...)``: mail never replaces it."""
+    domain: str
+    """The part of the address after the @."""
+    last_subject: Optional[str]
+    """Subject of the newest message with this contact, without Re:/Fwd:."""
+
+
+class ContactDomain(TypedDict):
+    """``contacts.domains``: contacts per domain (free-mail providers left out)."""
+
+    domain: str
+    contacts: int
+    last_seen_at: Optional[str]
+
+
+class ContactDomainList(TypedDict):
+    data: list[ContactDomain]
+
+
+class ContactBulkDeleteResult(TypedDict):
+    """``contacts.delete_many``: ``matched`` (dry run: would be deleted), ``deleted``, ``forgotten``, and
+    ``has_more`` when more than 1,000 matched (call again)."""
+
+    matched: int
+    deleted: int
+    forgotten: int
+    has_more: bool
+    dry_run: bool
 
 
 class ContactWithThreads(Contact):
@@ -725,10 +1210,48 @@ class DraftError(TypedDict):
     message: str
 
 
+class DraftApprover(TypedDict):
+    """Who approved a draft's send: a person (``label`` = email), an API key (its name), a connector, or a
+    ``policy``: a code-level approval policy, not a person or a key (``label`` names it, e.g. "Inbox Heist
+    vault policy")."""
+
+    type: Literal["user", "api_key", "connector", "policy"]
+    id: str
+    label: str
+
+
+class MessageApproval(TypedDict):
+    """An outbound message's approval, copied from its draft at send time."""
+
+    draft_id: str
+    by: DraftApprover
+    at: str
+    content_sha256: str
+
+
+class DraftCalendar(TypedDict):
+    """``draft["calendar"]``: what sending a meeting draft does. The meeting changes only when the draft is
+    sent."""
+
+    action: Literal["respond", "create", "update", "cancel"]
+    """``respond``: answer an invite. ``create``: a new meeting. ``update``: change one. ``cancel``: cancel
+    one."""
+    method: Literal["REQUEST", "CANCEL", "REPLY", "COUNTER"]
+    """iTIP method of the calendar file it carries (``COUNTER`` for an answer that proposes another time)."""
+    event_id: str
+    """The meeting; for ``create``, the id it gets once the draft is sent."""
+    removed_attendees: list[str]
+    """``update``: attendees the change takes off the meeting (they get a cancellation with it)."""
+
+
 class _DraftExtras(TypedDict, total=False):
     type: MessageType
     """Agent messaging: sent as the message's type and data."""
     data: Any
+    calendar: Optional[DraftCalendar]
+    """A meeting draft (made by the ``calendar`` calls with ``draft=True``): what sending it does to which
+    meeting. Its recipients come from the meeting (changing ``to``, ``cc``, ``bcc``, ``type`` or ``data`` is
+    422 ``calendar_draft_fixed``). None for other drafts; absent on older servers."""
 
 
 class Draft(_DraftExtras):
@@ -757,6 +1280,11 @@ class Draft(_DraftExtras):
     send_at: Optional[str]
     sent_at: Optional[str]
     sent_message_id: Optional[str]
+    approved_by: Optional[DraftApprover]
+    """Who sent it, scheduled it, or last changed what it sends while scheduled; ``None`` until then."""
+    approved_at: Optional[str]
+    approved_content_sha256: Optional[str]
+    """SHA-256 of the content the approval covers; a change to what a scheduled draft sends unschedules it."""
     error: Optional[DraftError]
     created_at: str
     updated_at: str
@@ -1038,6 +1566,43 @@ class WebhookTestResult(TypedDict):
     delivery_id: str
 
 
+WebhookDeliveryStatus = Literal["pending", "succeeded", "failed"]
+
+
+class WebhookDelivery(TypedDict):
+    """``GET /v1/webhooks/{id}/deliveries``: one event sent to one webhook, as of its latest attempt.
+
+    ``attempts`` is the attempt number, ``last_*`` its answer (``last_response_ms``: how long it took),
+    ``next_attempt_at`` when the next retry is due (``None`` once it succeeded or gave up).
+    """
+
+    id: str
+    webhook_id: str
+    event_id: str
+    event_type: str
+    status: WebhookDeliveryStatus
+    attempts: int
+    last_status_code: Optional[int]
+    last_error: Optional[str]
+    last_response_ms: Optional[int]
+    next_attempt_at: Optional[str]
+    last_attempt_at: Optional[str]
+    redelivered_at: Optional[str]
+    created_at: str
+
+
+SuppressionReason = Literal["bounce", "complaint", "manual"]
+
+
+class Suppression(TypedDict):
+    """An address on the workspace's own suppression list (``GET /v1/suppressions``)."""
+
+    address: str
+    reason: SuppressionReason
+    created_at: str
+    expires_at: Optional[str]
+
+
 class _MessageEventDataRequired(TypedDict):
     inbox: Inbox
     thread_id: str
@@ -1290,7 +1855,10 @@ class Account(_AccountExtras):
     restrictions: Optional[UnclaimedRestrictions]
 
 
-EscalationTrigger = Literal["needs_human", "phishing", "blocked", "draft_failed", "emergency_stop"]
+# ``draft_created``: a draft is waiting for a person to approve it (off by default).
+EscalationTrigger = Literal[
+    "needs_human", "phishing", "blocked", "draft_failed", "emergency_stop", "held", "draft_created"
+]
 
 
 class EscalationContact(TypedDict):
@@ -1549,7 +2117,8 @@ _DirectoryVerifyBase = TypedDict(
         "kid": Optional[str],
         "signed_at": Optional[str],
         "card": bool,
-        # e.g. bad_signature, unknown_key, key_revoked, agent_revoked, agent_suspended, agent_deleted
+        # e.g. bad_signature, unknown_key, key_revoked, key_retired, issued_in_future, agent_revoked,
+        # agent_suspended, agent_deleted
         "reasons": list[str],
     },
 )
@@ -1560,6 +2129,10 @@ class DirectoryVerifyResult(_DirectoryVerifyBase, total=False):
 
     signer: Optional[Literal["server", "agent"]]
     """``server`` (Agentboxd's delivery signature) or ``agent`` (an author signature); None for an address."""
+    key_revoked_at: Optional[str]
+    """Author signatures: when the agent key was revoked, or None. The signer picks ``iat``, so the
+    server never counts a revoked key's author signature as valid, whatever its ``iat``; to check one
+    sent before the revocation, use ``verify_author_signature`` on the message (it uses ``created_at``)."""
 
 
 class DirectoryReportResult(TypedDict):
@@ -1570,6 +2143,19 @@ class EmergencyStopResult(TypedDict):
     """``POST /v1/emergency-stop``: the workspace, now stopped."""
 
     org: dict[str, Any]
+
+
+class AddAgentResult(TypedDict):
+    """``POST /v1/signup/agents``: another agent in the same unclaimed workspace, with its own key."""
+
+    api_key: str
+    api_key_expires_at: Optional[str]
+    """When ``api_key`` stops working (401 ``api_key_expired``); None = never."""
+    kind: Literal["mailbox", "identity"]
+    workspace: dict[str, Any]
+    inbox: Optional[dict[str, Any]]
+    identity: Optional[dict[str, Any]]
+    next_steps: list[str]
 
 
 class ClaimRequestResult(TypedDict):

@@ -18,7 +18,7 @@ Node 20+ and Python 3.9+.
 
 ```bash
 # TypeScript client
-cd sdk && npm install && npm run typecheck && npm run build && npm test
+cd sdk && npm ci && npm run typecheck && npm run build && npm test
 
 # MCP server (typecheck covers ../sdk/src too)
 cd mcp && npm ci && npm run typecheck && npm test && npm run build && npm run smoke
@@ -32,7 +32,7 @@ python -m venv .venv
 .venv/bin/python -m ruff check . && .venv/bin/python -m ruff format --check .
 
 # Examples
-npm install && npm run typecheck:examples && npm run test:examples
+npm ci && npm run typecheck:examples && npm run test:examples
 ```
 
 CI runs the same commands on every pull request.

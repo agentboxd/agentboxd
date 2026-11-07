@@ -20,6 +20,13 @@ docs: https://agentboxd.com/docs/agent-identity.
 
 All tokens live at most 5 minutes and there are no refresh tokens: an agent signs in again with one API call.
 
+## Without an account (open client)
+
+An app can accept agents without registering: publish a client metadata document and use its URL as the
+`client_id` (`AGENTBOXD_CLIENT_ID=https://your-host/oauth/client.json`). `headless-rp` then works as it is for
+verification; the token exchange at `/token` needs a registered app. See
+[Add it in 5 minutes](https://agentboxd.com/docs/agent-identity#add-it-in-5-minutes).
+
 ## Register your app
 
 Dashboard → **Identity** → **Register an app** (or `POST /v1/identity/clients`, permission `identity:manage`):
@@ -29,7 +36,7 @@ Dashboard → **Identity** → **Register an app** (or `POST /v1/identity/client
 - **Verify tokens only** (`verify_only`): no secret and no redirect URIs; only receives headless tokens and verifies them itself.
 
 Redirect URIs are matched exactly: `https://…`, or `http://localhost` / `127.0.0.1` / `[::1]` (any port)
-for development. The ones these libraries use:
+for development. They can't be on an Agentboxd domain. The ones these libraries use:
 
 - Better Auth: `{BETTER_AUTH_URL}/api/auth/callback/agentboxd`
 - Auth.js: `https://your-app.com/api/auth/callback/agentboxd` (Next.js) or `/auth/callback/agentboxd` (other frameworks)

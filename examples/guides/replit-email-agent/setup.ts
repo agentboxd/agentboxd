@@ -9,6 +9,7 @@
  * app too), then republish.
  */
 import { Agentboxd } from 'agentboxd';
+import { EVENTS } from './handle.js';
 
 const appUrl = process.argv[2]?.replace(/\/+$/, '');
 if (!appUrl?.startsWith('https://')) throw new Error('usage: npx tsx setup.ts https://<your-app>.replit.app');
@@ -23,7 +24,7 @@ if (existing) {
 } else {
   const hook = await mr.webhooks.create({
     url,
-    events: ['message.received'],
+    events: [...EVENTS], // received, enriched (checked) and released (held mail let through)
     inbox_ids: [inbox.id],
     payload: 'envelope', // ids and subject only: the app reads the mail through the API
   });

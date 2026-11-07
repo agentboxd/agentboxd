@@ -37,6 +37,7 @@ console.log('wait_for_email →', waited.message.subject, '|', waited.message.te
 const listed = await a.listMessages({});
 assert.equal(listed.messages.length, 1);
 const read = await a.readMessage({ messageId: listed.messages[0]!.id });
+assert.ok(read.message, `read_message returned no content: ${JSON.stringify(read)}`);
 assert.equal(read.message.text, 'Hi, are you open on Saturday?'); // extracted_text: quoted history cut
 const replied = await a.reply({ messageId: read.message.id, text: 'Yes, 10:00 to 14:00.' });
 console.log('reply_to_email →', replied.status, 'thread', replied.thread_id === read.message.thread_id ? 'kept' : 'NEW');

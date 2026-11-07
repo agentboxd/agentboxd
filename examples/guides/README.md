@@ -25,7 +25,8 @@ The guides use `npm install agentboxd` / `pip install agentboxd` / `npx @agentbo
 repository the examples use the local sources instead:
 
 - TypeScript: `tsconfig.json` maps `agentboxd` to `../../sdk/src/index.ts`, and `tsx` follows it.
-- Python: `pip install -e ../../sdk-python` (each `requirements.txt` says so).
+- Python: each `requirements.txt` installs `agentboxd` from `../../../sdk-python`, so run
+  `pip install -r requirements.txt` from the guide's folder. Elsewhere: `pip install -e ../../sdk-python`.
 - MCP: `MCP_COMMAND="npx tsx ../../mcp/src/index.ts"` (run `npm ci` in `mcp/` first).
 
 ## Checks
@@ -37,6 +38,7 @@ npm run typecheck        # every TypeScript example
 npm run n8n:check        # the n8n workflow files match their source
 npm run openclaw:check   # the OpenClaw config and skill are valid
 npm run sim:check        # the Sim custom tools compile the way Sim runs them
+npm run vercel-ai:check  # the Vercel AI SDK tools skip mail that is still being checked (no server)
 ruff check . && ruff format --check .
 python -m py_compile langchain-email-tool/*.py crewai-email-agent/*.py openai-agents-sdk-email/*.py agent-self-signup/*.py   livekit-voice-agent-email/*.py google-adk-email-agent/*.py google-adk-email-agent/email_agent/*.py
 ```

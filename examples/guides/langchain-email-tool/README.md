@@ -10,7 +10,7 @@ Guide: https://agentboxd.com/guides/langchain-email-tool
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt          # until agentboxd is on PyPI: pip install -e ../../../sdk-python
+pip install -r requirements.txt          # from this folder: agentboxd comes from ../../../sdk-python
 cp .env.example .env                     # fill in, then export the variables
 python agent.py "Check for new email and answer simple questions"
 ```

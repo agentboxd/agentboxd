@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { parseSince, run } from '../dist/esm/cli/run.js';
+import { fromFilter, parseSince, run, senderAddress, termSafe } from '../dist/esm/cli/run.js';
 
 const dirs = [];
 after(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -287,12 +287,61 @@ test('messages list and get (untrusted banner, warnings, codes)', async () => {
   assert.match(g.stdout, /UNTRUSTED EMAIL CONTENT/);
   assert.match(g.stdout, /warning: {2}dmarc-fail/);
   assert.match(g.stdout, /code: {5}482913/);
-  assert.match(g.stdout, /\nHi!\n?$/);
+  assert.match(g.stdout, /\nHi!\n\nwarning: {2}dmarc-fail: [^\n]+\n$/, 'the warning is repeated below the body');
   assert.doesNotMatch(g.stdout, /old quote/);
   const j = await cli(['messages', 'get', 'msg_1', '--json'], { routes });
   assert.equal(JSON.parse(j.stdout).text, 'Hi!\n\n> old quote');
   const badDir = await cli(['messages', 'list', 'inb_1', '--direction', 'sideways'], { routes });
   assert.equal(badDir.code, 2);
+});
+
+// Characters a sender can put in mail, built from char codes (they are invisible in source).
+const ch = (...codes) => String.fromCharCode(...codes);
+const ESC = ch(27);
+const BEL = ch(7);
+/** How the CLI shows a control character: a visible \uXXXX escape. */
+const shown = (code) => `${ch(92)}u${code.toString(16).padStart(4, '0')}`;
+/** Control and bidi characters left in terminal output (line feeds and tabs are fine). */
+const unsafe = (s) =>
+  [...s].filter((c) => {
+    const n = c.charCodeAt(0);
+    return (n < 32 && n !== 10 && n !== 9) || (n >= 0x7f && n <= 0x9f) || (n >= 0x202a && n <= 0x202e) || (n >= 0x2066 && n <= 0x2069);
+  });
+
+test('termSafe: control, C1 and bidi characters become visible escapes; bodies keep line feeds and tabs', () => {
+  assert.equal(termSafe(`a${ESC}[2Kb`), `a${shown(27)}[2Kb`);
+  assert.equal(termSafe(`x${ch(0x9b)}y${ch(0x7f)}${ch(0x202e)}${ch(0x2069)}`), `x${shown(0x9b)}y${shown(0x7f)}${shown(0x202e)}${shown(0x2069)}`);
+  assert.equal(termSafe('one\ntwo\tthree'), `one${shown(10)}two${shown(9)}three`);
+  assert.equal(termSafe('one\r\ntwo\tthree\rfour', true), `one\ntwo\tthree${shown(13)}four`);
+  assert.equal(termSafe('Grüße, 日本語'), 'Grüße, 日本語');
+});
+
+test('messages get and list show escape sequences from mail as text, and repeat the warning after the body', async () => {
+  const evil = message({
+    from: `Eve${ESC}]0;pwned${BEL} <eve@example.com>`,
+    subject: `Hello${ESC}[1A${ESC}[2KReset`,
+    labels: ['ai:phishing'],
+    extracted_text: `Hi\n\tthere${ESC}[3A${ESC}[2K${ESC}]52;c;ZWNobyBwd24=${BEL} code: 123456${ch(0x9b)}2J${ch(0x202e)}`,
+    attachments: [{ id: 'att_1', filename: `invoice${ESC}[8m.pdf`, content_type: 'application/pdf', size_bytes: 10, extraction: null }],
+  });
+  const routes = { 'GET /v1/messages/msg_1': evil, 'GET /v1/inboxes/inb_1/messages': { data: [evil], next_cursor: null } };
+  const g = await cli(['messages', 'get', 'msg_1'], { routes });
+  assert.equal(g.code, 0);
+  assert.deepEqual(unsafe(g.stdout), []);
+  assert.ok(g.stdout.includes(`from:     Eve${shown(27)}]0;pwned${shown(7)} <eve@example.com>`));
+  assert.ok(g.stdout.includes(`subject:  Hello${shown(27)}[1A${shown(27)}[2KReset`));
+  assert.ok(g.stdout.includes(`attached: invoice${shown(27)}[8m.pdf`));
+  assert.ok(g.stdout.includes(`Hi\n\tthere${shown(27)}[3A`), 'the body keeps its line breaks and tabs');
+  assert.ok(g.stdout.includes(`${shown(27)}]52;c;ZWNobyBwd24=${shown(7)}`));
+  assert.equal(g.stdout.match(/^warning: {2}ai:phishing/gm)?.length, 2);
+  assert.match(g.stdout, /\nwarning: {2}ai:phishing[^\n]*\n$/);
+
+  const l = await cli(['messages', 'list', 'inb_1'], { routes });
+  assert.deepEqual(unsafe(l.stdout), []);
+  assert.ok(l.stdout.includes(`Hello${shown(27)}[1A`));
+
+  const j = await cli(['messages', 'get', 'msg_1', '--json'], { routes });
+  assert.equal(JSON.parse(j.stdout).subject, evil.subject, '--json keeps the exact value');
 });
 
 test('parseSince: ISO times and durations', () => {
@@ -303,6 +352,9 @@ test('parseSince: ISO times and durations', () => {
   assert.throws(() => parseSince('yesterday', now), /--since/);
 });
 
+const codeResult = (over = {}) => ({ code: '482913', link: 'https://acme.test/v?t=1', confidence: 0.95, jev_probability: 0.99, message_id: 'msg_1', from: 'no-reply@acme.test', subject: 'Your code', received_at: '', ...over });
+const polls = (r) => r.calls.filter((c) => c.key === 'GET /v1/inboxes/inb_1/verification');
+
 test('wait-code: loops 60-second long-polls until the code, prints it alone on stdout', async () => {
   let t = Date.parse('2026-09-26T12:00:00Z');
   let n = 0;
@@ -310,19 +362,92 @@ test('wait-code: loops 60-second long-polls until the code, prints it alone on s
     'GET /v1/inboxes/inb_1/verification': (u) => {
       n++;
       t += Number(u.searchParams.get('timeout')) * 1000; // the server held the request that long
-      return n < 3 ? [200, { data: null }] : [200, { data: { code: '482913', link: 'https://acme.test/v?t=1', confidence: 0.95, jev_probability: 0.99, message_id: 'msg_1', from: 'no-reply@acme.test', subject: 'Your code', received_at: '' } }];
+      return n < 3 ? [200, { data: null }] : [200, { data: codeResult() }];
     },
+    'GET /v1/messages/msg_1': message({ from: 'Acme <no-reply@acme.test>', labels: ['ai:verification'] }),
   };
-  const r = await cli(['wait-code', 'inb_1', '--since', '5m', '--timeout', '150', '--from', 'acme'], { routes, now: () => t });
+  const r = await cli(['wait-code', 'inb_1', '--since', '5m', '--timeout', '150', '--from', 'acme.test'], { routes, now: () => t });
   assert.equal(r.code, 0, r.stderr);
   assert.equal(r.stdout, '482913\n');
   assert.match(r.stderr, /link: https:\/\/acme\.test/);
+  assert.match(r.stderr, /labels: ai:verification/);
+  assert.doesNotMatch(r.stderr, /warning:/);
   assert.deepEqual(
-    r.calls.map((c) => c.url.searchParams.get('timeout')),
+    polls(r).map((c) => c.url.searchParams.get('timeout')),
     ['60', '60', '30'],
   );
   assert.equal(r.calls[0].url.searchParams.get('since'), '2026-09-26T11:55:00.000Z');
-  assert.equal(r.calls[0].url.searchParams.get('from'), 'acme');
+  assert.equal(r.calls[0].url.searchParams.get('from'), 'acme.test');
+});
+
+test('senderAddress and fromFilter: --from is matched against the sender address, never the display name', () => {
+  assert.equal(senderAddress('"github.com" <X@Evil.example>'), 'x@evil.example');
+  assert.equal(senderAddress('noreply@github.com'), 'noreply@github.com');
+  assert.equal(senderAddress('github.com'), '');
+  assert.equal(senderAddress('"a" <b@c> trailing'), '');
+
+  const domain = fromFilter('GitHub.com');
+  assert.equal(domain.query, 'github.com');
+  assert.equal(domain.matches('GitHub <noreply@github.com>'), true);
+  assert.equal(domain.matches('noreply@mail.github.com'), true, 'a subdomain counts');
+  assert.equal(domain.matches('"github.com" <x@evil.example>'), false);
+  assert.equal(domain.matches('noreply@github.com.evil.example'), false);
+  assert.equal(domain.matches('noreply@evilgithub.com'), false);
+  assert.equal(domain.matches('github.com'), false);
+  assert.equal(fromFilter('@github.com').query, 'github.com');
+
+  const address = fromFilter('NoReply@GitHub.com');
+  assert.equal(address.query, 'noreply@github.com');
+  assert.equal(address.matches('GitHub <noreply@github.com>'), true);
+  assert.equal(address.matches('noreply@mail.github.com'), false, 'an address is exact');
+  assert.equal(address.matches('"noreply@github.com" <x@evil.example>'), false);
+
+  for (const bad of ['acme', '', 'a b@c.d', 'x@', '.com', 'github.com.']) assert.throws(() => fromFilter(bad), /--from takes a sender address/);
+});
+
+test('wait-code --from: a code whose display name only looks like the sender is skipped', async () => {
+  let t = Date.parse('2026-09-26T12:00:00Z');
+  const spoof = message({ id: 'msg_spoof', from: '"github.com" <x@evil.example>', created_at: '2026-09-26T12:00:05.123Z' });
+  const real = message({ id: 'msg_real', from: 'GitHub <noreply@mail.github.com>', created_at: '2026-09-26T12:00:09.000Z' });
+  const routes = {
+    'GET /v1/inboxes/inb_1/verification': (u) => {
+      t += 1000;
+      return u.searchParams.get('since') === '2026-09-26T12:00:00.000Z'
+        ? [200, { data: codeResult({ code: '111111', message_id: 'msg_spoof', from: spoof.from }) }]
+        : [200, { data: codeResult({ code: '222222', message_id: 'msg_real', from: real.from }) }];
+    },
+    'GET /v1/messages/msg_spoof': spoof,
+    'GET /v1/messages/msg_real': real,
+  };
+  const r = await cli(['wait-code', 'inb_1', '--from', 'github.com', '--timeout', '30'], { routes, now: () => t });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, '222222\n');
+  assert.match(r.stderr, /skipped a code from x@evil\.example/);
+  const p = polls(r);
+  assert.deepEqual(p.map((c) => c.url.searchParams.get('from')), ['github.com', 'github.com']);
+  assert.equal(p[1].url.searchParams.get('since'), '2026-09-26T12:00:05.124Z', 'waits for a newer message');
+
+  const usage = await cli(['wait-code', 'inb_1', '--from', 'github'], { routes, now: () => t });
+  assert.equal(usage.code, 2);
+  assert.match(usage.stderr, /--from takes a sender address/);
+  assert.equal(usage.calls.length, 0);
+});
+
+test('wait-code: the risk warning and labels are printed next to the code', async () => {
+  const routes = {
+    'GET /v1/inboxes/inb_1/verification': { data: codeResult({ link: null }) },
+    'GET /v1/messages/msg_1': message({ from: 'no-reply@acme.test', labels: ['ai:verification', 'spf-fail', 'ai:phishing'] }),
+  };
+  const r = await cli(['wait-code', 'inb_1'], { routes, now: () => 0 });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, '482913\n', 'stdout stays the code alone');
+  assert.match(r.stderr, /warning: {2}spf-fail, ai:phishing: the sender failed authentication or this looks like phishing or prompt injection/);
+  assert.match(r.stderr, /labels: ai:verification, spf-fail, ai:phishing/);
+
+  const j = await cli(['wait-code', 'inb_1', '--json'], { routes, now: () => 0 });
+  assert.equal(j.code, 0, j.stderr);
+  assert.deepEqual(JSON.parse(j.stdout).labels, ['ai:verification', 'spf-fail', 'ai:phishing']);
+  assert.match(j.stderr, /warning: {2}spf-fail, ai:phishing/);
 });
 
 test('wait-code: exit 3 on timeout', async () => {
@@ -360,6 +485,8 @@ test('drafts list (all inboxes or one) and drafts send', async () => {
 
 class FakeWS {
   static sockets = [];
+  /** Fields of the message in each event. */
+  static message = {};
   constructor(url) {
     this.url = url;
     this.readyState = 0;
@@ -382,7 +509,7 @@ class FakeWS {
         this.onmessage?.({
           data: JSON.stringify({
             type: 'event',
-            event: { id, type: 'message.received', created_at: '2026-09-26T12:00:00Z', data: { message: message({ id: `msg_${id}` }) } },
+            event: { id, type: 'message.received', created_at: '2026-09-26T12:00:00Z', data: { message: message({ id: `msg_${id}`, ...FakeWS.message }) } },
           }),
         });
     }, 0);
@@ -417,6 +544,23 @@ test('tail: subscribes with filters and prints events until interrupted', async 
   const h = await cli(['tail'], { routes, WebSocket: FakeWS, interrupted: int2 });
   assert.match(h.stdout, /message\.received\s+Alice <alice@example\.com>\s+Hello\s+msg_evt_1/);
   assert.match(h.stderr, /listening/);
+});
+
+test('tail: escape sequences in the sender and subject are shown as text', async () => {
+  FakeWS.sockets = [];
+  FakeWS.message = { from: `Eve${ESC}]0;pwned${BEL} <eve@example.com>`, subject: `Hi${ESC}]52;c;ZWNobyBwd24=${BEL}` };
+  let stop;
+  const interrupted = new Promise((r) => (stop = r));
+  setTimeout(() => stop(), 50);
+  const routes = { 'POST /v1/stream/token': () => [201, { token: 'st_1', expires_at: '', url: 'ws://api.test/v1/stream?token=st_1' }] };
+  try {
+    const r = await cli(['tail'], { routes, WebSocket: FakeWS, interrupted });
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(unsafe(r.stdout), []);
+    assert.ok(r.stdout.includes(`Eve${shown(27)}]0;pwned${shown(7)} <eve@example.com>  Hi${shown(27)}]52;c;ZWNobyBwd24=${shown(7)}  msg_evt_1`));
+  } finally {
+    FakeWS.message = {};
+  }
 });
 
 test('tail: a revoked key ends with exit 1 and a hint', async () => {

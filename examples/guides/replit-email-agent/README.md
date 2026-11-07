@@ -6,12 +6,12 @@ A Replit template: an agent with its own Agentboxd inbox that answers new email,
 
 | File | What it is |
 |---|---|
-| `handle.ts` | What the agent does with a new email (re-read it from the API, skip risky and automatic mail, reply once, label it). Put your model call in `answer()`. |
+| `handle.ts` | What the agent does with a new email (re-read it from the API, wait while its content is withheld, skip risky and automatic mail, reply once, label it). Put your model call in `answer()`. |
 | `server.ts` | Webhook mode: `POST /webhook` verifies the signature and handles the email; `GET /` is the health check. Autoscale or Reserved VM. |
 | `worker.ts` | Stream mode: holds a WebSocket (`mr.stream()`) and handles each email. No public URL; needs a Reserved VM. |
 | `setup.ts` | One-time: creates the inbox and registers the webhook for your `.replit.app` URL, prints the secret |
 | `.replit`, `package.json` | Replit run and deployment config (Node 20, port 3000 → 80) |
-| `smoke.ts` | Checks the webhook server against a local Agentboxd dev stack (signature, reply, retry) |
+| `smoke.ts` | Checks the webhook server against a local Agentboxd dev stack (signature, withheld content skipped, one reply, retry) |
 
 On Replit: import this folder, add the `AGENTBOXD_API_KEY` secret, then either
 
@@ -19,8 +19,14 @@ On Replit: import this folder, add the `AGENTBOXD_API_KEY` secret, then either
   Shell, add the printed secret as `AGENTBOXD_WEBHOOK_SECRET`, republish; or
 - **stream mode**: publish as a Reserved VM background worker with the run command `npm run worker`.
 
+Both modes subscribe to `message.received`, `message.enriched` and `message.released`. In a workspace that
+screens agent mail, a message's content is withheld until its check passes (or a person releases it), so
+`handleMessage` skips a message that still comes back with `withheld` and handles it on the later event, once
+([what an API key gets](https://agentboxd.com/docs/api#screening-reads)).
+
 In this repository `agentboxd` resolves to the SDK source (see `../tsconfig.json`), so the template's
-own `package.json` isn't installed here. Check it with:
+own `package.json` isn't installed here; `npm run check:guide-examples` checks that its `agentboxd` range
+matches a release dated in `sdk/CHANGELOG.md`. Check the template with:
 
 ```bash
 cd examples/guides && npm ci

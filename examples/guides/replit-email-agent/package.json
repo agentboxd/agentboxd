@@ -13,7 +13,7 @@
     "setup": "tsx setup.ts"
   },
   "dependencies": {
-    "agentboxd": "^0.2.0",
+    "agentboxd": "^0.3.0",
     "tsx": "^4.23.15",
     "ws": "^8.21.3"
   }

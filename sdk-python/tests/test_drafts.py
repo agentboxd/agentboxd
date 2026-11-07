@@ -6,7 +6,15 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from agentboxd import Agentboxd, Draft, DraftReply, DraftSendResult, NotFoundError, RateLimitError
+from agentboxd import (
+    Agentboxd,
+    Draft,
+    DraftReply,
+    DraftSendResult,
+    NotFoundError,
+    PermissionDeniedError,
+    RateLimitError,
+)
 
 from .conftest import Recorder, make_async
 
@@ -159,3 +167,32 @@ def test_async_drafts(rec: Recorder) -> None:
         await mr.close()
 
     asyncio.run(main())
+
+
+def test_refused_send_error_carries_code_message_details_and_docs_url(
+    client: Agentboxd, rec: Recorder
+) -> None:
+    docs = "https://agentboxd.com/docs/send-refusals#sending_paused"
+    details = {"paused_at": "2026-10-05T09:00:00.000Z", "reason": "auto-paused: hard-bounce rate 8.00%"}
+    rec.reply(
+        {
+            "error": {
+                "code": "sending_paused",
+                "message": "sending is paused",
+                "details": details,
+                "docs_url": docs,
+            }
+        },
+        status=403,
+    )
+    with pytest.raises(PermissionDeniedError) as exc:
+        client.messages.send("ibx_1", to="a@b.com", subject="s", text="t")
+    assert exc.value.code == "sending_paused"
+    assert exc.value.message == "sending is paused"
+    assert exc.value.details == details
+    assert exc.value.docs_url == docs
+
+    rec.reply({"error": {"code": "not_found", "message": "x"}}, status=404)
+    with pytest.raises(NotFoundError) as exc2:
+        client.drafts.get("ibx_1", "nope")
+    assert exc2.value.docs_url is None

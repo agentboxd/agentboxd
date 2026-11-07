@@ -17,12 +17,14 @@ from collections.abc import AsyncIterator, Awaitable, Sequence
 from types import TracebackType
 from typing import Any, Callable, Literal, Optional
 
-from ._errors import AgentboxdError
+from ._errors import AgentboxdError, APIConnectionError, InternalServerError, RateLimitError
 from ._types import StreamEvent
 
 __all__ = ["EventStream", "StreamClosedError"]
 
 _FATAL_CODES = {4001, 4003, 1009}
+# ``error`` frame codes that refuse our own subscription or frame: the stream ends. Any other code reconnects.
+_REFUSALS = {"invalid_json", "invalid_message", "invalid_subscription", "inbox_not_found", "rate_limited"}
 _MAX_BACKOFF = 30.0
 
 
@@ -45,7 +47,8 @@ def _close_code(exc: BaseException) -> tuple[int, str]:
 
 
 class EventStream:
-    """Async iterator over stream events. Reconnects and resumes unless ``reconnect=False``.
+    """Async iterator over stream events. Reconnects and resumes unless ``reconnect=False``, also after a
+    failed token request (network error, 429, 5xx); a refused key or permission (401, 403) raises.
 
     ``last_event_id`` is the id of the last event yielded; ``replay_truncated`` is ``True`` after a
     (re)subscribe whose replay may have missed events (resynchronise with the REST API then).
@@ -105,9 +108,10 @@ class EventStream:
 
         attempt = 0
         while not self._closed:
-            # Token errors (bad key, missing permission) propagate: retrying won't help.
-            url = await self._mint_url()
+            retry_after = 0.0
             try:
+                # Token errors (bad key, missing permission) propagate: retrying won't help.
+                url = await self._mint_url()
                 async with websockets.connect(url, max_size=None) as ws:
                     self._ws = ws
                     async for raw in ws:
@@ -126,8 +130,18 @@ class EventStream:
                             self.last_event_id = event["id"]
                             yield event
                         elif kind == "error":
-                            # Every error the server sends is about our own subscription.
-                            raise StreamClosedError(1008, str(msg.get("message")), str(msg.get("code")))
+                            error_code = str(msg.get("code"))
+                            if error_code in _REFUSALS:
+                                # A refused subscription: reconnecting would repeat it.
+                                raise StreamClosedError(1008, str(msg.get("message")), error_code)
+                            # A fault on the server's side: reconnect with backoff and resume with since.
+                            await ws.close(4000, "server error")
+                            break
+            except (APIConnectionError, InternalServerError, RateLimitError) as exc:
+                # The token request failed (network down, API restarting, rate limited): retry below.
+                if not self._reconnect:
+                    raise
+                retry_after = exc.retry_after or 0.0
             except websockets.ConnectionClosed as exc:
                 code, reason = _close_code(exc)
                 if code in _FATAL_CODES:
@@ -139,5 +153,6 @@ class EventStream:
             if self._closed or not self._reconnect:
                 return
             base = min(_MAX_BACKOFF, 2.0**attempt)
-            attempt += 1
-            await asyncio.sleep(base / 2 + random.random() * base / 2)
+            if base < _MAX_BACKOFF:
+                attempt += 1  # stop at the cap: a long outage would overflow 2.0**attempt
+            await asyncio.sleep(max(retry_after, base / 2 + random.random() * base / 2))

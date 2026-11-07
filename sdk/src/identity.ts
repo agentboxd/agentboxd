@@ -26,7 +26,8 @@ export const MAX_IDENTITY_TOKEN_SECONDS = 300;
 /**
  * Remembers which token ids (`jti`) were already accepted, until they expire. `use` returns true the
  * first time a jti is seen and false for a replay. Implement it on Redis/your database when you run
- * more than one process (e.g. `SET jti 1 NX EXAT exp`).
+ * more than one process (e.g. `SET jti 1 NX EXAT expiresAt`). `expiresAt` already includes the clock
+ * tolerance: keep the entry until then, not until the token's own `exp`.
  */
 export interface ReplayCache {
   use(jti: string, expiresAt: number): boolean | Promise<boolean>;
@@ -214,7 +215,9 @@ export async function verifyAgentIdentityToken(token: string, opts: VerifyAgentI
   if (opts.nonce !== undefined && claims.nonce !== opts.nonce) throw new AgentIdentityError('nonce_mismatch', 'identity token nonce does not match');
   const isAgent = claims[AGENT_CLAIM] === true;
   if ((opts.requireAgent ?? true) && !isAgent) throw new AgentIdentityError('not_agent', 'identity token is not an agent identity');
-  if (opts.replayCache && !(await opts.replayCache.use(claims.jti, claims.exp))) {
+  // jwtVerify accepts the token until exp + tolerance, so the jti is kept that long too: until exp alone, a
+  // captured token would verify again in the last `tolerance` seconds.
+  if (opts.replayCache && !(await opts.replayCache.use(claims.jti, claims.exp + tolerance))) {
     throw new AgentIdentityError('token_replayed', 'identity token was already used');
   }
 
@@ -243,8 +246,18 @@ export async function verifyAgentIdentityToken(token: string, opts: VerifyAgentI
 export const AGENT_MESSAGE_TYP = 'agentboxd-msg+jwt';
 /** Default freshness window for `task` and `event` messages (seconds). Plain messages have none by default. */
 export const DEFAULT_AGENT_MESSAGE_MAX_AGE_SECONDS = 900;
-/** Replay entries are kept this long when no freshness window applies. */
+/**
+ * With a replay cache and no freshness window, nonces are kept this long, and older signatures are refused
+ * (`too_old`): once its nonce is forgotten, the same signature would verify again.
+ */
 const REPLAY_WITHOUT_MAX_AGE_SECONDS = 86_400;
+
+/** Seconds since the epoch of an ISO time from a key set or a message; undefined when absent or unreadable. */
+const epochSeconds = (iso: unknown): number | undefined => {
+  if (typeof iso !== 'string' || !iso) return undefined;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms / 1000 : undefined;
+};
 
 export type AgentMessageAssurance = 'unclaimed' | 'workspace' | 'domain_verified' | 'org_verified';
 
@@ -276,7 +289,10 @@ export interface AgentMessageLike {
   in_reply_to: string | null;
   attachments: { sha256: string }[];
   agent?: { signature?: string | null } | null;
-  /** The author signature (aSIM phase 2): checked against the delivery signature's agent_sig claim when both exist. */
+  /**
+   * The author signature (aSIM phase 2). When the delivery signature names one (its `agent_sig` claim), it must be
+   * here and match, or verification fails with `content_mismatch` (`author`).
+   */
   author?: { signature?: string | null } | null;
 }
 
@@ -287,16 +303,24 @@ export interface VerifyAgentMessageOptions {
   issuer?: string;
   /** The JWS, when the message doesn't carry it in `agent.signature`. */
   signature?: string;
-  /** Default `{issuer}/.well-known/agent-keys.json` (cached 5 minutes, refetched on an unknown key id). */
+  /**
+   * Default `{issuer}/.well-known/agent-keys.json` (cached 5 minutes, refetched on an unknown key id). An answer
+   * that isn't a key set (`{ "keys": [...] }`) fails with `unknown_key` and isn't cached.
+   */
   keysUri?: string;
   /** A key set to use instead of fetching `keysUri` (tests, air-gapped verifiers). */
   keys?: AgentKeySet;
   /**
    * Reject signatures older than this (seconds). Default: 900 for `task` and `event`, none for `message`.
-   * `null` turns the check off (archives, audits).
+   * `null` turns the check off (archives, audits). With a `replayCache`, signatures older than a day are refused
+   * even then: a nonce is remembered for a day, and a forgotten nonce would let the same signature verify again.
    */
   maxAgeSeconds?: number | null;
-  /** Rejects a `nonce` seen before, until `iat + maxAgeSeconds` (a day without a window). */
+  /**
+   * Rejects a `nonce` seen before, until `iat + maxAgeSeconds` plus the clock tolerance (a day without a window).
+   * The nonce is recorded only after every other check passed, so a failed check (a directory that couldn't be
+   * reached) can be retried.
+   */
   replayCache?: ReplayCache;
   /** Seconds of clock skew allowed. Default 30. */
   clockTolerance?: number;
@@ -418,16 +442,34 @@ async function loadJoseFor(): Promise<Jose> {
 
 const keyCache = new Map<string, { at: number; keys: AgentKeySet }>();
 const KEY_CACHE_MS = 300_000;
+/** An unknown kid fetches the key set again at most once per URI in this window; inside it the cached set answers. */
+const KEY_REFETCH_COOLDOWN_MS = 60_000;
+const KEY_FETCH_TIMEOUT_MS = 10_000;
+/** Last fetch attempt per URI, successful or not. */
+const keyFetchedAt = new Map<string, number>();
 
 async function fetchAgentKeys(uri: string, fresh: boolean): Promise<AgentKeySet> {
   const hit = keyCache.get(uri);
-  if (hit && !fresh && Date.now() - hit.at < KEY_CACHE_MS) return hit.keys;
-  const res = await fetch(uri, { headers: { Accept: 'application/json' } });
+  const now = Date.now();
+  if (hit && now - hit.at < KEY_CACHE_MS && (!fresh || now - (keyFetchedAt.get(uri) ?? 0) < KEY_REFETCH_COOLDOWN_MS)) {
+    return hit.keys;
+  }
+  keyFetchedAt.set(uri, now);
+  const res = await fetch(uri, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(KEY_FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new AgentMessageVerificationError('unknown_key', `could not fetch ${uri}: HTTP ${res.status}`);
-  const keys = (await res.json()) as AgentKeySet;
-  keyCache.set(uri, { at: Date.now(), keys });
-  return keys;
+  // A body that isn't a key set (an HTML error page served with 200, a changed format) is refused and not cached,
+  // so the next verification fetches again.
+  const keys = (await res.json().catch(() => undefined)) as Partial<AgentKeySet> | null | undefined;
+  if (!keys || typeof keys !== 'object' || !Array.isArray(keys.keys)) {
+    throw new AgentMessageVerificationError('unknown_key', `malformed key set at ${uri}`);
+  }
+  keyCache.set(uri, { at: Date.now(), keys: keys as AgentKeySet });
+  return keys as AgentKeySet;
 }
+
+/** The key with this kid; entries that aren't objects are skipped. */
+const findKey = (set: AgentKeySet, kid: string): AgentKey | undefined =>
+  (Array.isArray(set?.keys) ? set.keys : []).find((k) => typeof k === 'object' && k !== null && k.kid === kid);
 
 const bare = (address: string) => (/<([^<>]+)>\s*$/.exec(address)?.[1] ?? address).trim().toLowerCase();
 const addressSet = (list: readonly string[]) => [...new Set(list.map(bare).filter(Boolean))].sort();
@@ -476,8 +518,10 @@ async function contentMismatches(m: AgentMessageLike, c: AgentMessageClaims): Pr
   if (!sameList(att, c.att ?? [])) bad.push('attachments');
   if ((m.type ?? 'message') !== c.type) bad.push('type');
   if ((m.in_reply_to ?? undefined) !== c.in_reply_to) bad.push('in_reply_to');
+  // The delivery signature names the author signature it was made with: that one must be there, unchanged.
+  // A copy without it (removed by a relay or an export) is refused like a different one.
   const author = m.author?.signature?.replace(/\s+/g, '');
-  if (c.agent_sig && author && (await sha256b64u(author)) !== c.agent_sig.jws_sha256) bad.push('author');
+  if (c.agent_sig && (!author || (await sha256b64u(author)) !== c.agent_sig.jws_sha256)) bad.push('author');
   return bad;
 }
 
@@ -511,10 +555,10 @@ async function checkSenderStanding(signature: string, opts: RevocationCheckOptio
 
 /**
  * Verifies an agent message's delivery signature outside Agentboxd (docs: https://agentboxd.com/docs/agent-messaging):
- * ES256 against the issuer's agent-keys.json (a key revoked at or before `iat` fails), `typ`, `iss`, `aud` = your
- * address, the content hashes against the message you hold, freshness (`maxAgeSeconds`) and replay (`replayCache`,
- * keyed by `nonce`) and, with `checkRevocation`, the sender's live status in the directory. Throws
- * AgentMessageVerificationError.
+ * ES256 against the issuer's agent-keys.json (a key revoked at or before `iat`, or revoked without a time, fails),
+ * `typ`, `iss`, `aud` = your address, the content hashes against the message you hold (and the author signature its
+ * `agent_sig` names, which must be there), freshness (`maxAgeSeconds`), with `checkRevocation` the sender's live
+ * status in the directory, and last replay (`replayCache`, keyed by `nonce`). Throws AgentMessageVerificationError.
  *
  * Inside Agentboxd you don't need it: `message.agent.verified` already says the sender was verified at delivery.
  * Use it to prove a task's origin to your own backend, an auditor or another service. A verified sender is not
@@ -542,10 +586,10 @@ export async function verifyAgentMessage(message: AgentMessageLike, opts: Verify
 
   const uri = opts.keysUri ?? `${issuer}/.well-known/agent-keys.json`;
   let keySet = opts.keys ?? (await fetchAgentKeys(uri, false));
-  let key = keySet.keys.find((k) => k.kid === header.kid);
+  let key = findKey(keySet, header.kid);
   if (!key && !opts.keys) {
     keySet = await fetchAgentKeys(uri, true); // rotated since the last fetch
-    key = keySet.keys.find((k) => k.kid === header.kid);
+    key = findKey(keySet, header.kid);
   }
   if (!key) throw new AgentMessageVerificationError('unknown_key', `no agent signing key ${header.kid} at ${opts.keys ? 'the given key set' : uri}`);
 
@@ -561,8 +605,13 @@ export async function verifyAgentMessage(message: AgentMessageLike, opts: Verify
   if (typeof claims.iat !== 'number' || typeof claims.nonce !== 'string' || typeof claims.aud !== 'string') {
     throw new AgentMessageVerificationError('invalid_signature', 'missing iat, nonce or aud');
   }
-  if (key.status === 'revoked' && key.revoked_at && Date.parse(key.revoked_at) / 1000 <= claims.iat) {
-    throw new AgentMessageVerificationError('key_revoked', `key ${key.kid} was revoked at ${key.revoked_at}, before this signature`);
+  if (key.status === 'revoked') {
+    // A revoked key without a (readable) revocation time counts as revoked from the start.
+    const revokedAt = epochSeconds(key.revoked_at);
+    if (revokedAt === undefined) throw new AgentMessageVerificationError('key_revoked', `key ${key.kid} is revoked (no revocation time)`);
+    if (revokedAt <= claims.iat) {
+      throw new AgentMessageVerificationError('key_revoked', `key ${key.kid} was revoked at ${String(key.revoked_at)}, before this signature`);
+    }
   }
   if (claims.iss !== issuer) throw new AgentMessageVerificationError('wrong_issuer', `issuer is ${String(claims.iss)}, expected ${issuer}`);
   if (claims.aud !== bare(opts.recipient)) {
@@ -573,15 +622,22 @@ export async function verifyAgentMessage(message: AgentMessageLike, opts: Verify
 
   const now = (opts.currentDate ?? new Date()).getTime() / 1000;
   if (claims.iat > now + tolerance) throw new AgentMessageVerificationError('issued_in_future', 'signature iat is in the future');
-  const maxAge =
+  const freshness =
     opts.maxAgeSeconds === undefined ? (claims.type === 'message' ? null : DEFAULT_AGENT_MESSAGE_MAX_AGE_SECONDS) : opts.maxAgeSeconds;
+  // Replay protection lasts only as long as the nonce is remembered: with a replay cache, a signature older than
+  // that is refused, or it would verify again once its nonce is forgotten.
+  const maxAge = freshness ?? (opts.replayCache ? REPLAY_WITHOUT_MAX_AGE_SECONDS : null);
   if (maxAge !== null && now - claims.iat > maxAge + tolerance) {
-    throw new AgentMessageVerificationError('too_old', `signed ${Math.round(now - claims.iat)} s ago; the limit is ${maxAge} s`);
-  }
-  if (opts.replayCache && !(await opts.replayCache.use(claims.nonce, claims.iat + (maxAge ?? REPLAY_WITHOUT_MAX_AGE_SECONDS)))) {
-    throw new AgentMessageVerificationError('replayed', 'this signature was already accepted (nonce seen before)');
+    const why = freshness === null ? ' (a replayCache remembers nonces for a day)' : '';
+    throw new AgentMessageVerificationError('too_old', `signed ${Math.round(now - claims.iat)} s ago; the limit is ${maxAge} s${why}`);
   }
   if (opts.checkRevocation) await checkSenderStanding(signature, opts.checkRevocation);
+  // The nonce is recorded last, once everything else passed: burned before a check that failed (the directory
+  // couldn't be reached), it would turn every retry into `replayed`. It is kept as long as the signature verifies:
+  // until iat + maxAge + the clock tolerance.
+  if (opts.replayCache && maxAge !== null && !(await opts.replayCache.use(claims.nonce, claims.iat + maxAge + tolerance))) {
+    throw new AgentMessageVerificationError('replayed', 'this signature was already accepted (nonce seen before)');
+  }
 
   return {
     from: claims.from,
@@ -727,7 +783,10 @@ export interface AuthorSignInput {
   type?: 'message' | 'task' | 'event';
   /** Raw bytes of each attachment, or its SHA-256 hex. */
   attachments?: (Uint8Array | string)[];
-  /** Final header recipients (optional: covered only when given). */
+  /**
+   * Final header recipients (optional: covered only when given). Given either, both are signed: the one left out as
+   * none, so a cc can't be added to a signed `to`.
+   */
   to?: string[];
   cc?: string[];
   inReplyTo?: string;
@@ -763,8 +822,12 @@ export async function authorClaims(input: AuthorSignInput): Promise<Record<strin
     c.data_sha256 = await sha256b64u(canonical);
   }
   if (input.subject !== undefined) c.subject_sha256 = await sha256b64u(input.subject);
-  if (input.to !== undefined) c.to = addressSet(input.to);
-  if (input.cc !== undefined) c.cc = addressSet(input.cc);
+  if (input.to !== undefined || input.cc !== undefined) {
+    // One statement of who the message goes to: once either is given, both are signed ([] for the one left out),
+    // as every verifier reads them.
+    c.to = addressSet(input.to ?? []);
+    c.cc = addressSet(input.cc ?? []);
+  }
   if (input.inReplyTo !== undefined) c.in_reply_to = input.inReplyTo;
   return c;
 }
@@ -787,7 +850,9 @@ export type AuthorSignatureErrorCode =
   | 'malformed'
   | 'wrong_type'
   | 'unknown_key'
+  | 'key_retired'
   | 'key_revoked'
+  | 'issued_in_future'
   | 'bad_signature'
   | 'wrong_sender'
   | 'content_mismatch';
@@ -815,6 +880,11 @@ export interface AuthoredMessageLike {
   in_reply_to: string | null;
   attachments: { sha256: string }[];
   author?: { signature?: string | null } | null;
+  /**
+   * When Agentboxd created the message (an API message has it). The signer picks `iat`; this is the server's time,
+   * so key revocation and retirement are judged by the later of the two, and an `iat` after it is refused.
+   */
+  created_at?: string | null;
 }
 
 /** One published agent key (a card's `keys.agent`, or the public `keys.json`). */
@@ -823,9 +893,23 @@ export interface PublishedAgentKeyLike {
   kty: string;
   alg?: string;
   status: 'active' | 'retired' | 'revoked';
+  retired_at?: string | null;
   revoked_at?: string | null;
   [member: string]: unknown;
 }
+
+export interface VerifyAuthorSignatureOptions {
+  keys: PublishedAgentKeyLike[] | { keys: PublishedAgentKeyLike[] };
+  /** The JWS, when the message doesn't carry it in `author.signature`. */
+  signature?: string;
+  /** Seconds of clock skew allowed on `iat`. Default 30. */
+  clockTolerance?: number;
+  /** "Now" for the future-`iat` check (tests). */
+  currentDate?: Date;
+}
+
+/** Agentboxd accepts an author signature whose `iat` is at most this far ahead of its own clock (asim-phase2 §1.4). */
+const AUTHOR_FUTURE_SKEW_SECONDS = 60;
 
 export interface VerifiedAuthorSignature {
   from: string;
@@ -839,13 +923,17 @@ export interface VerifiedAuthorSignature {
 
 /**
  * Verifies a message's author signature (docs/asim-phase2-contract.md §1.5) against the agent's published keys
- * (`card.keys.agent` from `directory.resolve`, or `publicDirectory.keys(address)`): the key (a key revoked at or
- * before `iat` fails), the signature, the sender and every claim present. Throws AuthorSignatureError.
+ * (`card.keys.agent` from `directory.resolve`, or `publicDirectory.keys(address)`): the key, the signature, the
+ * sender and every claim present. Throws AuthorSignatureError.
+ *
+ * The signer picks `iat`, so a stolen key could backdate it. A revoked key (compromised) fails when `iat` or the
+ * message's `created_at` (Agentboxd's time) is at or after `revoked_at`, when the message has no `created_at`, or
+ * when the key has no `revoked_at`. A retired key (rotated) fails with `key_retired` when `iat` is at or after
+ * `retired_at`: old signatures stay valid, also on a copy delivered after the rotation. An `iat` in the future, or
+ * more than 60 s after `created_at`, fails with `issued_in_future`. Once `to` or `cc` is signed, both are checked,
+ * and the one left out means none.
  */
-export async function verifyAuthorSignature(
-  message: AuthoredMessageLike,
-  opts: { keys: PublishedAgentKeyLike[] | { keys: PublishedAgentKeyLike[] }; signature?: string },
-): Promise<VerifiedAuthorSignature> {
+export async function verifyAuthorSignature(message: AuthoredMessageLike, opts: VerifyAuthorSignatureOptions): Promise<VerifiedAuthorSignature> {
   const jose = await loadJoseForKeys();
   const jws = (opts.signature ?? message.author?.signature ?? '').replace(/\s+/g, '');
   if (!jws) throw new AuthorSignatureError('no_signature', 'the message carries no author signature');
@@ -870,9 +958,40 @@ export async function verifyAuthorSignature(
   } catch (err) {
     throw new AuthorSignatureError('bad_signature', `signature does not verify: ${(err as Error).message}`);
   }
-  if (typeof claims.iat !== 'number' || claims.v !== 1) throw new AuthorSignatureError('malformed', 'missing iat or unknown version');
-  if (key.status === 'revoked' && key.revoked_at && Date.parse(key.revoked_at) / 1000 <= claims.iat) {
-    throw new AuthorSignatureError('key_revoked', `key ${key.kid} was revoked at ${key.revoked_at}, before this signature`);
+  if (typeof claims.iat !== 'number' || !Number.isFinite(claims.iat) || claims.v !== 1) {
+    throw new AuthorSignatureError('malformed', 'missing iat or unknown version');
+  }
+  const iat = claims.iat;
+  const tolerance = opts.clockTolerance ?? 30;
+  const now = (opts.currentDate ?? new Date()).getTime() / 1000;
+  if (iat > now + tolerance) throw new AuthorSignatureError('issued_in_future', 'signature iat is in the future');
+  // created_at is Agentboxd's clock, which the signer doesn't control. The server accepts an iat at most 60 s ahead
+  // of it, and the signature existed before the message did.
+  const createdAt = epochSeconds(message.created_at);
+  if (createdAt !== undefined && iat > createdAt + AUTHOR_FUTURE_SKEW_SECONDS + tolerance) {
+    throw new AuthorSignatureError('issued_in_future', 'signature iat is after the message was created');
+  }
+  if (key.status === 'revoked') {
+    // Compromised. A revoked key without a (readable) revocation time counts as revoked from the start. The signer
+    // picks iat and a stolen key can backdate it, so only the message's creation (Agentboxd's clock) dates a signature
+    // before the revocation: without created_at a revoked key's signature fails, and with it the later of iat and
+    // created_at must be before revoked_at (a copy delivered after revoked_at fails too).
+    const revokedAt = epochSeconds(key.revoked_at);
+    if (revokedAt === undefined) throw new AuthorSignatureError('key_revoked', `key ${key.kid} is revoked (no revocation time)`);
+    if (createdAt === undefined) {
+      throw new AuthorSignatureError('key_revoked', `key ${key.kid} is revoked, and the message has no created_at to date the signature by`);
+    }
+    if (revokedAt <= Math.max(iat, createdAt)) {
+      throw new AuthorSignatureError('key_revoked', `key ${key.kid} was revoked at ${String(key.revoked_at)}, before this signature or message`);
+    }
+  }
+  if (key.status === 'retired') {
+    // Rotated, not compromised: signatures made before retired_at stay valid, newer ones don't (Agentboxd refuses
+    // them at send). Only iat counts here: a message sent before the rotation may be delivered after it.
+    const retiredAt = epochSeconds(key.retired_at);
+    if (retiredAt !== undefined && retiredAt <= iat) {
+      throw new AuthorSignatureError('key_retired', `key ${key.kid} was retired at ${String(key.retired_at)}, before this signature`);
+    }
   }
   if (claims.from !== bare(message.from)) throw new AuthorSignatureError('wrong_sender', `signed by ${String(claims.from)}, sent by ${bare(message.from)}`);
 
@@ -915,7 +1034,7 @@ export async function verifyAuthorSignature(
     from: claims.from as string,
     kid: header.kid,
     alg,
-    iat: claims.iat,
+    iat,
     covered: { subject, text, html, data, attachments: true, recipients, in_reply_to: inReplyTo },
     claims,
   };

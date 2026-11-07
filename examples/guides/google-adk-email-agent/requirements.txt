@@ -1,2 +1,4 @@
-agentboxd>=0.1.0
+# agentboxd from this repository, so the guide runs against this code (users: pip install agentboxd).
+# Run pip from this folder.
+-e ../../../sdk-python
 google-adk>=2.10,<3

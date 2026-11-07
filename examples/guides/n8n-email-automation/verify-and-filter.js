@@ -21,9 +21,19 @@ if (!/^[0-9a-f]{64}$/i.test(sig) || !crypto.timingSafeEqual(Buffer.from(sig, 'he
 }
 
 const event = JSON.parse(raw.toString('utf8'));
-if (event.type !== 'message.received') return [];
+// The content of a message comes with one of these. In a workspace that screens agent mail it is withheld
+// until the check passes (message.enriched) or a person releases it (message.released); see
+// https://agentboxd.com/docs/api#screening-reads
+if (!['message.received', 'message.enriched', 'message.released'].includes(event.type)) return [];
 
 const m = event.data.message;
+if (m.withheld) return []; // not screened yet, or held: a later event brings the content
+// Handle each message once, whichever event brought it. Saved only for runs of the published workflow.
+const seen = $getWorkflowStaticData('global');
+seen.handled = seen.handled || [];
+if (seen.handled.includes(m.id)) return [];
+seen.handled = [...seen.handled, m.id].slice(-500);
+
 // Spoofed senders: never auto-answer them.
 if (m.labels.includes('spf-fail') || m.labels.includes('dmarc-fail')) return [];
 // Auto-replies, bulk mail and bounces: answering them starts mail loops.

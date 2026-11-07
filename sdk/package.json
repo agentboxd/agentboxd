@@ -75,7 +75,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test test/esm.test.mjs test/cjs.test.cjs test/identity.test.mjs test/cli.test.mjs test/agentMessage.test.mjs test/authorSignature.test.mjs",
+    "test": "node --test test/esm.test.mjs test/cjs.test.cjs test/identity.test.mjs test/cli.test.mjs test/agentMessage.test.mjs test/authorSignature.test.mjs test/calendar.test.mjs",
     "prepack": "node scripts/build.mjs",
     "prepublishOnly": "npm run typecheck && npm run build && npm test",
     "smoke": "node scripts/smoke-cli.mjs"

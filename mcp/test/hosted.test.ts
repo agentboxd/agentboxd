@@ -12,9 +12,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ConfigError } from '../src/config.js';
 import {
   createHostedHandler,
+  describeRpc,
   exchangeEndpoint,
   GrantRateLimiter,
   httpExchanger,
+  KnownTokens,
   loadHostedConfig,
   protectedResourceMetadata,
   resourceMetadataUrl,
@@ -122,6 +124,31 @@ describe('the 401 challenge', () => {
     expect(res.headers.get('www-authenticate')).toMatch(/^Bearer error="invalid_token", error_description="[^"]+", resource_metadata="[^"]+", scope="mcp"$/);
   });
 
+  it('a made-up token gets its 401 before the body is read or parsed', async () => {
+    const bad = await post('{nope', { Authorization: 'Bearer zzz' });
+    expect(bad.status).toBe(401);
+    expect(exchanged).toEqual(['zzz']);
+    // A body within the limit that never arrives: the 401 comes without waiting for it.
+    const status = await new Promise<number>((resolve, reject) => {
+      const u = new URL(base);
+      const req = request(
+        { host: u.hostname, port: u.port, path: '/mcp', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': '1000', Authorization: 'Bearer abxmt_made_up' } },
+        (r) => {
+          r.resume();
+          resolve(r.statusCode ?? 0);
+          req.destroy();
+        },
+      );
+      req.on('error', reject); // after the answer, a no-op
+      req.write('{"jsonrpc":"2.0"');
+      setTimeout(() => {
+        req.destroy();
+        resolve(0); // no answer while the body was missing
+      }, 2_000);
+    });
+    expect(status).toBe(401);
+  });
+
   it('never reads a token from the query string', async () => {
     const res = await post(init, {}, `/mcp?access_token=${ACCESS_TOKEN}`);
     expect(res.status).toBe(401);
@@ -181,11 +208,56 @@ describe('transport guards', () => {
   });
 
   it('413 over the body limit, 400 for invalid JSON, 404 elsewhere', async () => {
-    expect((await post({ jsonrpc: '2.0', id: 1, method: 'x', params: { pad: 'x'.repeat(4000) } })).status).toBe(413);
+    const big = { jsonrpc: '2.0', id: 1, method: 'x', params: { pad: 'x'.repeat(4000) } };
+    expect((await post(big, { Authorization: `Bearer ${ACCESS_TOKEN}` })).status).toBe(413);
+    expect(exchanged).toEqual([]);
     const bad = await post('{nope', { Authorization: `Bearer ${ACCESS_TOKEN}` });
     expect(bad.status).toBe(400);
     expect(await bad.json()).toMatchObject({ error: { code: -32700 } });
     expect((await fetch(`${base}/other`)).status).toBe(404);
+  });
+
+  it('413 for a chunked body that grows past the limit (no Content-Length to check first)', async () => {
+    const r = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const u = new URL(base);
+      const req = request(
+        { host: u.hostname, port: u.port, path: '/mcp', method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ACCESS_TOKEN}` } },
+        (res) => {
+          let text = '';
+          res.on('data', (c: Buffer) => (text += c.toString()));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, body: text }));
+        },
+      );
+      req.on('error', reject);
+      for (let i = 0; i < 8; i++) req.write('x'.repeat(1024));
+      req.end();
+    });
+    expect(r.status).toBe(413);
+    expect(JSON.parse(r.body)).toMatchObject({ error: { code: -32000, message: 'Request body larger than 2048 bytes' } });
+    expect(fake.requests).toEqual([]);
+  });
+
+  it('401 without a Bearer header before the body is read, whatever its size', async () => {
+    const big = { jsonrpc: '2.0', id: 1, method: 'x', params: { pad: 'x'.repeat(4000) } };
+    const res = await post(big);
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toMatch(/^Bearer resource_metadata=/);
+    // A declared length far over the limit is answered without waiting for the body.
+    const status = await new Promise<number>((resolve, reject) => {
+      const u = new URL(base);
+      const req = request(
+        { host: u.hostname, port: u.port, path: '/mcp', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': String(64 * 1024 * 1024) } },
+        (r) => {
+          r.resume();
+          resolve(r.statusCode ?? 0);
+          req.destroy();
+        },
+      );
+      req.on('error', reject); // after the answer, a no-op
+      req.write('{"jsonrpc":"2.0"');
+    });
+    expect(status).toBe(401);
+    expect(exchanged).toEqual([]);
   });
 });
 
@@ -260,18 +332,271 @@ describe('an authorized MCP session', () => {
     expect(text).not.toContain(API_KEY);
     expect(text).not.toContain('secret-local-part');
   });
+
+  it('logs the size of a batch and the method and tool of each message, never their arguments (#295 A5)', async () => {
+    logs.length = 0;
+    const res = await post(
+      [
+        { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'create_inbox', arguments: { username: 'secret-batch-part' } } },
+        { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+        { jsonrpc: '2.0', method: 'notifications/initialized' },
+      ],
+      { Authorization: `Bearer ${ACCESS_TOKEN}` },
+    );
+    expect(res.status).toBe(200);
+    await res.text();
+    const entry = logs.find((l) => l.rpc === 'batch');
+    expect(entry).toMatchObject({ batch: 3, methods: ['tools/call', 'tools/list', 'notifications/initialized'], tools: ['create_inbox'], grant: 'grant-1', status: 200 });
+    expect(JSON.stringify(logs)).not.toContain('secret-batch-part');
+  });
+
+  it('describeRpc: one message, a batch (a response has no method), at most 100 methods logged', () => {
+    expect(describeRpc({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_message', arguments: { message_id: 'x' } } })).toEqual({
+      rpc: 'tools/call',
+      tool: 'get_message',
+    });
+    expect(describeRpc([{ jsonrpc: '2.0', id: 1, result: {} }, { jsonrpc: '2.0', id: 2, method: 'ping' }])).toEqual({ rpc: 'batch', batch: 2, methods: [null, 'ping'] });
+    const big = describeRpc(Array.from({ length: 150 }, (_, i) => ({ jsonrpc: '2.0', id: i, method: 'm'.repeat(100) })));
+    expect(big).toMatchObject({ rpc: 'batch', batch: 150 });
+    expect(big.methods).toHaveLength(100);
+    expect(big.methods![0]).toHaveLength(64);
+    expect(describeRpc('nope')).toEqual({});
+  });
 });
 
 describe('rate limit per grant', () => {
-  it('counts per grant in one-minute windows', () => {
+  it('counts per grant in one-minute windows; refund takes back one request, never below none', () => {
     let t = 0;
     const l = new GrantRateLimiter(2, () => t);
     expect(l.take('a')).toBe(0);
     expect(l.take('a')).toBe(0);
+    l.refund('a');
+    expect(l.take('a')).toBe(0);
     expect(l.take('a')).toBeGreaterThan(0);
+    // take(n) counts n at once (a batch).
+    expect(new GrantRateLimiter(3, () => t).take('z', 3)).toBe(0);
+    const n = new GrantRateLimiter(3, () => t);
+    expect(n.take('z', 2)).toBe(0);
+    expect(n.take('z', 2)).toBeGreaterThan(0);
     expect(l.take('b')).toBe(0);
+    l.refund('b');
+    l.refund('b');
+    l.refund('c');
+    expect(l.take('b')).toBe(0);
+    expect(l.take('b')).toBe(0);
+    expect(l.take('b')).toBeGreaterThan(0);
     t = 60_000;
     expect(l.take('a')).toBe(0);
+  });
+
+  describe('a connection past its allowance', () => {
+    const LIMIT = 3;
+    const TOKENS: Record<string, string> = { abxmt_a: 'grant-a', abxmt_a2: 'grant-a', abxmt_b: 'grant-b' };
+    let srv: Server;
+    let url: string;
+    let t = 1_000_000 * 60_000; // the start of a minute
+    let calls: string[] = [];
+    let revoked = new Set<string>();
+    let down = false;
+
+    beforeAll(async () => {
+      const ex: Exchanger = async (token) => {
+        calls.push(token);
+        if (down) return { ok: false, kind: 'unavailable', description: 'down' };
+        const grantId = TOKENS[token];
+        if (!grantId || revoked.has(token)) return { ok: false, kind: 'invalid', description: 'the access token is invalid, expired or revoked' };
+        return { ok: true, token: API_KEY, grantId, clientId: 'c', expiresIn: 300 };
+      };
+      srv = createServer();
+      await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+      url = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/mcp`;
+      const limited = loadHostedConfig({
+        MCP_RESOURCE_URL: url,
+        IDENTITY_ISSUER: 'https://id.agentboxd.test',
+        AGENTBOXD_INTERNAL_URL: fake.url,
+        CONNECTOR_EXCHANGE_SECRET: SECRET,
+        MCP_MAX_BODY_BYTES: '2048',
+        MCP_RATE_LIMIT_PER_MINUTE: String(LIMIT),
+      });
+      const handle = createHostedHandler(limited, { exchange: ex, log: () => {}, now: () => t });
+      srv.on('request', (req, res) => void handle(req, res));
+    });
+
+    afterAll(async () => {
+      await new Promise((r) => srv.close(r));
+    });
+
+    beforeEach(() => {
+      t += 60_000;
+      calls = [];
+      revoked = new Set();
+      down = false;
+    });
+
+    /** Sends `body` (a string as is, anything else as JSON). */
+    const send = async (token: string, body: unknown = init) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${token}` },
+        body: typeof body === 'string' ? body : JSON.stringify(body),
+      });
+      await res.text();
+      return res;
+    };
+
+    /** Sends the headers and the first bytes of `body` now, the rest when `finish` is called. */
+    const open = (token: string, body: string) => {
+      const u = new URL(url);
+      let finish = () => {};
+      const status = new Promise<number>((resolve, reject) => {
+        const req = request(
+          {
+            host: u.hostname,
+            port: u.port,
+            path: u.pathname,
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json, text/event-stream',
+              Authorization: `Bearer ${token}`,
+              'Content-Length': String(Buffer.byteLength(body)),
+            },
+          },
+          (res) => {
+            res.resume();
+            res.on('end', () => resolve(res.statusCode ?? 0));
+          },
+        );
+        req.on('error', reject); // after the answer, a no-op
+        req.write(body.slice(0, 5));
+        finish = () => void req.end(body.slice(5));
+      });
+      return { status, finish: () => finish() };
+    };
+
+    it('serves every request of the allowance, then answers 429 without another exchange or reading the body', async () => {
+      for (let i = 0; i < LIMIT; i++) expect((await send('abxmt_a')).status).toBe(200);
+      expect(calls).toHaveLength(LIMIT);
+      for (let i = 0; i < 5; i++) {
+        const r = await send('abxmt_a');
+        expect(r.status).toBe(429);
+        expect(Number(r.headers.get('retry-after'))).toBeGreaterThan(0);
+      }
+      // A declared body over the limit gets 413 before anything else, and no exchange either.
+      expect((await send('abxmt_a', { jsonrpc: '2.0', id: 1, method: 'x', params: { pad: 'x'.repeat(4000) } })).status).toBe(413);
+      expect(calls).toHaveLength(LIMIT);
+      // Another connection is not affected; the next minute starts afresh.
+      expect((await send('abxmt_b')).status).toBe(200);
+      t += 60_000;
+      expect((await send('abxmt_a')).status).toBe(200);
+      expect(calls).toEqual([...Array<string>(LIMIT).fill('abxmt_a'), 'abxmt_b', 'abxmt_a']);
+    });
+
+    it('a new token of a connection that used up its minute is exchanged once, then refused like the others', async () => {
+      for (let i = 0; i < LIMIT; i++) expect((await send('abxmt_a')).status).toBe(200);
+      // A refreshed access token is not known yet: one exchange tells which connection it belongs to.
+      expect((await send('abxmt_a2')).status).toBe(429);
+      expect((await send('abxmt_a2')).status).toBe(429);
+      expect(calls.filter((c) => c === 'abxmt_a2')).toHaveLength(1);
+    });
+
+    it('a token known from an earlier exchange is still checked by the exchange: revoked means 401', async () => {
+      expect((await send('abxmt_b')).status).toBe(200);
+      revoked.add('abxmt_b');
+      expect((await send('abxmt_b')).status).toBe(401);
+      expect((await send('abxmt_b')).status).toBe(401);
+      expect(calls).toEqual(['abxmt_b', 'abxmt_b', 'abxmt_b']);
+    });
+
+    it('counts a request before its body arrives: bodies sent slowly cost no exchange past the limit', async () => {
+      expect((await send('abxmt_a')).status).toBe(200); // known now, 1 of LIMIT used
+      const held = Array.from({ length: 10 }, () => open('abxmt_a', JSON.stringify(init)));
+      await new Promise((r) => setTimeout(r, 100)); // every request's headers are in, no body is complete
+      for (const h of held) h.finish();
+      const statuses = await Promise.all(held.map((h) => h.status));
+      expect(statuses.filter((s) => s === 200)).toHaveLength(LIMIT - 1);
+      expect(statuses.filter((s) => s === 429)).toHaveLength(10 - (LIMIT - 1));
+      expect(calls).toHaveLength(LIMIT);
+    });
+
+    it('a request that cost an exchange counts even when its body is not valid JSON', async () => {
+      const statuses: number[] = [];
+      for (let i = 0; i < LIMIT + 3; i++) statuses.push((await send('abxmt_a', '{nope')).status);
+      expect(statuses).toEqual([...Array<number>(LIMIT).fill(400), 429, 429, 429]);
+      expect(calls).toHaveLength(LIMIT);
+    });
+
+    it('a request whose exchange fails does not count toward the minute', async () => {
+      expect((await send('abxmt_a')).status).toBe(200); // known now, 1 of LIMIT used
+      down = true;
+      for (let i = 0; i < LIMIT + 2; i++) expect((await send('abxmt_a')).status).toBe(503);
+      down = false;
+      for (let i = 1; i < LIMIT; i++) expect((await send('abxmt_a')).status).toBe(200);
+      expect((await send('abxmt_a')).status).toBe(429);
+    });
+
+    const listInboxes = (id: number) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'list_inboxes', arguments: {} } });
+    const toolRuns = () => fake.requests.filter((q) => q.method === 'GET' && q.path === '/v1/inboxes').length;
+
+    it('a JSON-RPC batch counts each of its messages, and a batch past the limit runs none of them (#295 A5)', async () => {
+      const first = await send('abxmt_a', [listInboxes(1), listInboxes(2)]);
+      expect(first.status).toBe(200);
+      expect(toolRuns()).toBe(2);
+      // 2 of LIMIT used: a second batch of 2 would make 4.
+      const second = await send('abxmt_a', [listInboxes(3), listInboxes(4)]);
+      expect(second.status).toBe(429);
+      expect(Number(second.headers.get('retry-after'))).toBeGreaterThan(0);
+      expect(toolRuns()).toBe(2);
+      // The minute is used up for single requests too, at no exchange.
+      expect((await send('abxmt_a')).status).toBe(429);
+      expect(calls).toEqual(['abxmt_a', 'abxmt_a']);
+    });
+
+    it('a batch larger than the whole allowance is refused at once (no tool runs)', async () => {
+      const r = await send('abxmt_b', Array.from({ length: 10 }, (_, i) => listInboxes(i + 1)));
+      expect(r.status).toBe(429);
+      expect(toolRuns()).toBe(0);
+      expect(calls).toEqual(['abxmt_b']);
+    });
+
+    it('a batch of one counts once, like a single message', async () => {
+      for (let i = 0; i < LIMIT; i++) expect((await send('abxmt_a', [listInboxes(i + 1)])).status).toBe(200);
+      expect((await send('abxmt_a', [listInboxes(9)])).status).toBe(429);
+    });
+
+    it('a token whose exchange failed is forgotten: it goes to the exchange again, not to the limit', async () => {
+      expect((await send('abxmt_a2')).status).toBe(200);
+      revoked.add('abxmt_a2');
+      expect((await send('abxmt_a2')).status).toBe(401);
+      for (let i = 1; i < LIMIT; i++) expect((await send('abxmt_a')).status).toBe(200); // grant-a uses up its minute
+      expect((await send('abxmt_a')).status).toBe(429);
+      expect((await send('abxmt_a2')).status).toBe(401);
+      expect(calls.filter((c) => c === 'abxmt_a2')).toHaveLength(3);
+    });
+  });
+});
+
+describe('known tokens', () => {
+  it('remembers a token for its exchange lifetime (at most 5 minutes), forgets on request, keeps the newest', () => {
+    let t = 0;
+    const k = new KnownTokens(2, () => t);
+    k.remember('tok-1', 'g1', 'c', 30);
+    k.remember('tok-2', 'g2', 'c', 3600);
+    expect(k.get('tok-1')).toEqual({ grantId: 'g1', clientId: 'c' });
+    t = 30_000;
+    expect(k.get('tok-1')).toBeUndefined();
+    expect(k.get('tok-2')).toMatchObject({ grantId: 'g2' });
+    t = 300_000;
+    expect(k.get('tok-2')).toBeUndefined();
+
+    k.remember('tok-3', 'g3', 'c', undefined); // no lifetime given: one minute
+    k.remember('tok-4', 'g4', 'c', 120);
+    k.remember('tok-5', 'g5', 'c', 120);
+    expect(k.size).toBe(2);
+    expect(k.get('tok-3')).toBeUndefined();
+    expect(k.get('tok-5')).toMatchObject({ grantId: 'g5' });
+    k.forget('tok-5');
+    expect(k.get('tok-5')).toBeUndefined();
   });
 });
 
@@ -290,7 +615,7 @@ describe('token exchange client', () => {
     }) as unknown as typeof fetch;
     const c = { ...cfg, issuer: 'https://id.agentboxd.com', internalUrl: 'http://api:3000' };
     const ex = httpExchanger(c, fakeFetch);
-    expect(await ex('abxmt_a')).toEqual({ ok: true, token: 'abxst_x', grantId: 'g', clientId: 'c' });
+    expect(await ex('abxmt_a')).toEqual({ ok: true, token: 'abxst_x', grantId: 'g', clientId: 'c', expiresIn: 300 });
     expect(await ex('abxmt_b')).toMatchObject({ ok: false, kind: 'invalid' });
     expect(await ex('abxmt_c')).toMatchObject({ ok: false, kind: 'unavailable' });
     expect(seen[0]!.url).toBe('http://api:3000/token');

@@ -10,7 +10,7 @@ Guide: https://agentboxd.com/guides/livekit-voice-agent-email
 
 ```bash
 python -m venv .venv && . .venv/bin/activate   # .venv\Scripts\activate on Windows
-pip install -r requirements.txt                # in this repository: pip install -e ../../../sdk-python first
+pip install -r requirements.txt                # from this folder: agentboxd comes from ../../../sdk-python
 cp .env.example .env                           # fill it in and export the variables
 python agent.py console                        # talk to it in the terminal
 python agent.py dev                            # serve it to LiveKit Cloud (Playground, phone numbers)

@@ -50,7 +50,24 @@ for (const name of names) {
   compile(code, params, {}); // throws on a syntax error
   tools.set(name, { schema, code, params });
 }
-console.log(`sim tools ok: ${names.join(', ')}`);
+// Offline: list_unread_emails leaves out mail whose content is withheld (not screened yet, or held).
+{
+  const t = tools.get('list_unread_emails')!;
+  const msg = (id: string, over: Record<string, unknown> = {}) => ({
+    id, from: 'dana@example.com', subject: 'Opening hours', received_at: '2026-10-01T10:00:00Z', labels: [],
+    text: 'Open on Saturday?', extracted_text: 'Open on Saturday?', ...over,
+  });
+  const withheld = { subject: '[not screened yet]', text: null, extracted_text: null, withheld: { state: 'pending', reason: null, attachments: 0 } };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => Response.json({ data: [msg('msg_pending', withheld), msg('msg_ok')], next_cursor: null })) as typeof fetch;
+  try {
+    const listed = (await compile(t.code, t.params, { AGENTBOXD_API_KEY: 'mr_test', AGENTBOXD_INBOX_ID: 'inb_test' })(5)) as { emails: { id: string }[] };
+    assert.deepEqual(listed.emails.map((e) => e.id), ['msg_ok'], 'withheld mail must be left out of the list');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+console.log(`sim tools ok: ${names.join(', ')} (withheld mail skipped)`);
 
 if (process.argv.includes('--smoke')) {
   const baseUrl = process.env.AGENTBOXD_BASE_URL ?? 'http://localhost:3000';

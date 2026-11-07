@@ -59,7 +59,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install -e ".[dev]" twine pip-audit
+      # Tool versions pinned in .github/requirements-ci.txt (they also pin the ruff of the dev extra).
+      - run: python -m pip install -e ".[dev]" twine pip-audit -c ../.github/requirements-ci.txt
       - name: pip-audit (runtime deps; dev environment report only)
         run: python -m pip_audit . && (python -m pip_audit || true)
       - run: python -m pytest
@@ -89,7 +90,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+      - run: npm ci
       - run: npm run typecheck:examples
       - run: npm run test:examples
 
@@ -111,6 +112,6 @@ jobs:
       - run: npm run typecheck
       - run: npm run n8n:check
       - run: npm run openclaw:check
-      - run: python -m pip install ruff
+      - run: python -m pip install ruff -c ../../.github/requirements-ci.txt
       - run: python -m ruff check . && python -m ruff format --check .
       - run: python -m py_compile langchain-email-tool/*.py crewai-email-agent/*.py openai-agents-sdk-email/*.py agent-self-signup/*.py

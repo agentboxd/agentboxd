@@ -1,0 +1,8 @@
+# Exact versions of the Python tools CI installs (used with pip -c, so each step installs only what it
+# names). Dependabot proposes updates. twine 7 and pip-audit 2.10 need Python 3.10: the 3.9 job keeps
+# the last versions that support 3.9.
+twine==7.0.0; python_version >= "3.10"
+twine==6.2.0; python_version < "3.10"
+pip-audit==2.10.1; python_version >= "3.10"
+pip-audit==2.9.0; python_version < "3.10"
+ruff==0.17.0

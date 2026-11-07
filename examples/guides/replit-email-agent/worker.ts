@@ -6,7 +6,7 @@
  *   npx tsx worker.ts        Secrets: AGENTBOXD_API_KEY; optional AGENTBOXD_INBOX (client_id)
  */
 import { Agentboxd } from 'agentboxd';
-import { handleMessage } from './handle.js';
+import { EVENTS, handleMessage } from './handle.js';
 
 const mr = new Agentboxd();
 const inbox = await mr.inboxes.create({ client_id: process.env.AGENTBOXD_INBOX ?? 'replit-agent' });
@@ -14,7 +14,9 @@ console.log(`watching ${inbox.address}`);
 
 // Reconnects and resumes on its own (missed events are replayed after a short drop). Node 22+ has a
 // global WebSocket; on Node 20 the SDK loads the `ws` package from package.json.
-const stream = mr.stream({ inboxIds: [inbox.id], eventTypes: ['message.received'], payload: 'envelope' });
+// message.enriched and message.released carry mail that wasn't screened yet when it arrived; handleMessage skips
+// what is still withheld and handles each message once.
+const stream = mr.stream({ inboxIds: [inbox.id], eventTypes: [...EVENTS], payload: 'envelope' });
 stream.on('error', (err) => console.error('stream:', err.message));
 process.on('SIGTERM', () => stream.close());
 

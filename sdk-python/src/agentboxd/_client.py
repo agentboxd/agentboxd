@@ -5,7 +5,7 @@ import os
 import threading
 from collections.abc import Mapping, Sequence
 from types import TracebackType
-from typing import Any, Literal, Optional, TypeVar, Union, cast
+from typing import Any, Literal, Optional, TypeVar, Union, cast, overload
 
 import httpx
 
@@ -14,6 +14,7 @@ from . import _requests as r
 from ._errors import APIConnectionError, error_for_status
 from ._requests import (
     NOT_GIVEN,
+    CalendarTime,
     DraftStatuses,
     InboxIds,
     MetadataFilter,
@@ -31,6 +32,7 @@ from ._stream import EventStream
 from ._types import (
     Account,
     AckResult,
+    AddAgentResult,
     AgentBundle,
     AgentCard,
     AgentCardInput,
@@ -39,16 +41,33 @@ from ._types import (
     AgentKeyList,
     AttachmentInput,
     AttachmentText,
+    BatchMessages,
     BuiltinExtractionSchema,
+    CalendarAnswer,
+    CalendarAttendeeInput,
+    CalendarCancelDraftResult,
+    CalendarCancelResult,
+    CalendarDraftResult,
+    CalendarEvent,
+    CalendarEventPage,
+    CalendarEventResult,
+    CalendarEventRole,
+    CalendarEventStatus,
+    CalendarResponse,
     ClaimRequestResult,
     Contact,
+    ContactBulkDeleteResult,
+    ContactDomainList,
+    ContactKind,
     ContactWithThreads,
+    DeletedThread,
     DeliverabilitySummary,
     Direction,
     DirectoryReportReason,
     DirectoryReportResult,
     DirectoryVerifyResult,
     Domain,
+    DomainZoneFile,
     Draft,
     DraftKeep,
     DraftReply,
@@ -65,6 +84,7 @@ from ._types import (
     IdentityToken,
     Inbox,
     InboxEscalation,
+    InboxForward,
     InboxIdentity,
     KnowledgeDoc,
     KnowledgeListItem,
@@ -76,6 +96,7 @@ from ._types import (
     ListKind,
     Message,
     MessageChannel,
+    MessageStatus,
     MessageType,
     Metrics,
     MetricsBucket,
@@ -88,16 +109,21 @@ from ._types import (
     QuietHours,
     ResolvedAgent,
     ResumedInbox,
+    ScreeningState,
     SearchResult,
     SignupChallenge,
     SignupResult,
     StreamToken,
     StructuredExtraction,
+    Suppression,
+    SuppressionReason,
     Thread,
     ThreadWithMessages,
     VerificationResult,
     Webhook,
     WebhookCatalogEntry,
+    WebhookDelivery,
+    WebhookDeliveryStatus,
     WebhookEventType,
     WebhookPayload,
     WebhookTestResult,
@@ -209,12 +235,14 @@ class _BaseClient:
             code = err.get("code")
             message = err.get("message")
             details = err.get("details")
+            docs_url = err.get("docs_url")
             raise error_for_status(
                 response.status_code,
                 code if isinstance(code, str) else None,
                 message if isinstance(message, str) else (response.reason_phrase or None),
                 details,
                 _retry_after(response, details),
+                docs_url if isinstance(docs_url, str) else None,
             )
         return payload
 
@@ -284,11 +312,14 @@ class Inboxes:
         display_name: Nullable = NOT_GIVEN,
         metadata: Optional[MetadataPatch] = None,
         ttl_seconds: Optional[int] = None,
+        promotions_filter: Union[bool, NotGiven, None] = NOT_GIVEN,
     ) -> Inbox:
         """Change the display name (``None`` clears it) or metadata (merged; ``None`` deletes a key).
 
-        ``ttl_seconds`` extends a temporary inbox from now (at most 24 h after its creation)."""
-        return cast(Inbox, self._c._send(r.inbox_update(inbox_id, display_name, metadata, ttl_seconds)))
+        ``ttl_seconds`` extends a temporary inbox from now (at most 24 h after its creation).
+        ``promotions_filter`` turns the Promotions & spam view on or off (``None``: back to the default)."""
+        req = r.inbox_update(inbox_id, display_name, metadata, ttl_seconds, promotions_filter)
+        return cast(Inbox, self._c._send(req))
 
     def delete(self, inbox_id: str) -> None:
         """Soft-delete an inbox (its address is never reused). A temporary inbox is wiped at once."""
@@ -314,6 +345,9 @@ class Inboxes:
         wait: float = _consume.DEFAULT_WAIT,
         consumer: Optional[str] = None,
         enriched: Optional[bool] = None,
+        analysis: Optional[Literal["completed"]] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
         stop: "Optional[threading.Event]" = None,
         retry_delay_seconds: float = 5,
         max_retry_delay_seconds: float = 300,
@@ -337,6 +371,9 @@ class Inboxes:
                 wait=wait,
                 consumer=consumer,
                 enriched=enriched,
+                analysis=analysis,
+                include_unscreened=include_unscreened,
+                include_held=include_held,
                 retry_delay_seconds=retry_delay_seconds,
                 max_retry_delay_seconds=max_retry_delay_seconds,
                 paused_poll_seconds=paused_poll_seconds,
@@ -360,6 +397,12 @@ class Domains:
 
     def get(self, domain_id: str) -> Domain:
         return cast(Domain, self._c._send(r.domain_get(domain_id)))
+
+    def zone_file(self, domain_id: str) -> DomainZoneFile:
+        """The records to publish as a BIND zone file (``filename`` and ``content``).
+
+        Write ``content`` to a file and import it at a DNS provider that takes one."""
+        return cast(DomainZoneFile, self._c._send(r.domain_zone_file(domain_id)))
 
     def verify(self, domain_id: str) -> Domain:
         """Check the DNS records now (at most once per 10 s per domain)."""
@@ -430,6 +473,49 @@ class Messages:
         )
         return cast(Message, self._c._send(req))
 
+    def forward(
+        self,
+        inbox_id: str,
+        message_id: str,
+        to: Recipients,
+        cc: Optional[Recipients] = None,
+        bcc: Optional[Recipients] = None,
+        text: Optional[str] = None,
+        html: Optional[str] = None,
+        include_attachments: Optional[bool] = None,
+        labels: Optional[Sequence[str]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Message:
+        """Forward a message to new recipients, in a new thread: ``text`` (your note) above the original,
+        with its attachments unless ``include_attachments=False``."""
+        req = r.message_forward(
+            inbox_id, message_id, to, cc, bcc, text, html, include_attachments, labels, idempotency_key
+        )
+        return cast(Message, self._c._send(req))
+
+    def batch_get(
+        self,
+        ids: Sequence[str],
+        *,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> BatchMessages:
+        """Up to 100 messages by id; ids you can't see come back in ``missing``."""
+        req = r.messages_batch_get(ids, include_unscreened, include_held)
+        return cast(BatchMessages, self._c._send(req))
+
+    def batch_update(
+        self,
+        ids: Sequence[str],
+        add_labels: Optional[Sequence[str]] = None,
+        remove_labels: Optional[Sequence[str]] = None,
+        is_read: Optional[bool] = None,
+    ) -> BatchMessages:
+        """The same label and read changes on up to 100 messages."""
+        return cast(
+            BatchMessages, self._c._send(r.messages_batch_update(ids, add_labels, remove_labels, is_read))
+        )
+
     def reply(
         self,
         inbox_id: str,
@@ -472,18 +558,84 @@ class Messages:
         include_blocked: Optional[bool] = None,
         channel: Optional[MessageChannel] = None,
         type: Optional[MessageType] = None,
+        screening: Optional[ScreeningState] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+        promotions: Optional[Literal["include", "exclude", "only"]] = None,
+        status: Optional[MessageStatus] = None,
     ) -> Page[Message]:
         """List messages, newest first. ``labels`` filters to messages having all of them.
 
         ``include_blocked=True`` also returns mail stopped by the receive lists (label ``blocked``).
+        ``screening="held"`` returns only received mail in that screening state.
+        ``status="bounced"`` (with ``direction="outbound"``) returns sent mail that bounced.
+        ``promotions="exclude"`` leaves out mail labelled ``ai:sales`` or ``local:spam``; ``"only"`` lists
+        just that.
         """
         req = r.message_list(
-            inbox_id, labels, is_read, direction, cursor, limit, include_blocked, channel, type
+            inbox_id,
+            labels,
+            is_read,
+            direction,
+            cursor,
+            limit,
+            include_blocked,
+            channel,
+            type,
+            screening,
+            include_unscreened,
+            include_held,
+            promotions,
+            status,
         )
         return cast("Page[Message]", self._c._send(req))
 
-    def get(self, message_id: str) -> Message:
-        return cast(Message, self._c._send(r.message_get(message_id)))
+    def list_all(
+        self,
+        labels: Optional[Sequence[str]] = None,
+        is_read: Optional[bool] = None,
+        direction: Optional[Direction] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+        include_blocked: Optional[bool] = None,
+        channel: Optional[MessageChannel] = None,
+        type: Optional[MessageType] = None,
+        screening: Optional[ScreeningState] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+        status: Optional[MessageStatus] = None,
+    ) -> Page[Message]:
+        """Messages of every inbox the key can see (an inbox-scoped key: its inbox), newest first.
+
+        Each message carries its ``inbox_id``. The filters of :meth:`list`, except ``promotions``.
+        ``GET /v1/messages``.
+        """
+        req = r.message_list_all(
+            labels,
+            is_read,
+            direction,
+            cursor,
+            limit,
+            include_blocked,
+            channel,
+            type,
+            screening,
+            include_unscreened,
+            include_held,
+            status,
+        )
+        return cast("Page[Message]", self._c._send(req))
+
+    def get(
+        self,
+        message_id: str,
+        *,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> Message:
+        """One message. Held or unscreened mail comes back with ``withheld`` (no content) unless you opt in;
+        ``include_held`` needs the ``messages:release`` permission."""
+        return cast(Message, self._c._send(r.message_get(message_id, include_unscreened, include_held)))
 
     def update(
         self,
@@ -493,6 +645,13 @@ class Messages:
         is_read: Optional[bool] = None,
     ) -> Message:
         return cast(Message, self._c._send(r.message_update(message_id, add_labels, remove_labels, is_read)))
+
+    def release(self, message_id: str) -> Message:
+        """Release a held message to agents: claim and ``wait`` return it from now on. Safe to repeat.
+
+        Emits ``message.released``. Needs the ``messages:release`` permission (Full access keys only).
+        409 ``not_held`` for mail that isn't held, ``message_blocked`` for mail stopped by the lists."""
+        return cast(Message, self._c._send(r.message_release(message_id)))
 
     def draft_reply(
         self, message_id: str, instructions: Optional[str] = None, *, save: Optional[bool] = None
@@ -539,14 +698,28 @@ class Messages:
         direction: Optional[Direction] = None,
         channel: Optional[MessageChannel] = None,
         type: Optional[MessageType] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
     ) -> Optional[Message]:
         """Long-poll until a matching message arrives, or return ``None`` after ``timeout`` seconds (1-60).
 
         Only messages created after ``since`` (ISO time; default: now) count. The oldest match is
-        returned; pass its ``created_at`` as the next ``since`` to page forward. ``from_`` and
-        ``subject`` are case-insensitive substring filters; ``direction`` defaults to inbound.
+        returned; pass its ``created_at`` as the next ``since`` to page forward. ``from_`` is the
+        sender's address (exactly), a domain (and its subdomains) or a part of the address, never
+        the display name; ``subject`` is a case-insensitive substring; ``direction`` defaults to inbound.
         """
-        req = r.message_wait(inbox_id, timeout, since, from_, subject, direction, channel, type)
+        req = r.message_wait(
+            inbox_id,
+            timeout,
+            since,
+            from_,
+            subject,
+            direction,
+            channel,
+            type,
+            include_unscreened,
+            include_held,
+        )
         return cast(Optional[Message], self._c._send(req)["data"])
 
     def wait_for_verification(
@@ -555,10 +728,15 @@ class Messages:
         timeout: float = 30,
         since: Optional[str] = None,
         from_: Optional[str] = None,
+        include_unauthenticated: Optional[bool] = None,
     ) -> Optional[VerificationResult]:
         """Return the newest verification code/link received after ``since``, waiting up to
-        ``timeout`` seconds for one to arrive. ``None`` on timeout."""
-        req = r.message_wait_for_verification(inbox_id, timeout, since, from_)
+        ``timeout`` seconds for one to arrive. ``None`` on timeout.
+
+        ``from_``: a sender address (exactly) or a domain (and its subdomains), never the display name.
+        Codes from mail whose sender failed authentication (possible spoofs) are skipped unless
+        ``include_unauthenticated=True``; then ``auth_failed`` says so."""
+        req = r.message_wait_for_verification(inbox_id, timeout, since, from_, include_unauthenticated)
         return cast(Optional[VerificationResult], self._c._send(req)["data"])
 
     def claim(
@@ -573,14 +751,33 @@ class Messages:
         since: Optional[str] = None,
         type: Optional[MessageType] = None,
         channel: Optional[MessageChannel] = None,
+        analysis: Optional[Literal["completed"]] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
     ) -> LeaseClaim:
         """Claim/ack queue: lease up to ``limit`` (1-50, default 10) inbound messages, oldest first.
 
         Each is hidden from other claims for ``lease_seconds`` (30-3600, default 300); ``ack`` it when
         the work is done, or it comes back (at-least-once). ``wait`` long-polls up to 30 s. The first
         claim starts the queue: older mail is not claimable unless you pass ``since``. A paused inbox
-        returns ``{"data": [], "paused": True}``. ``enriched=True`` waits for AI categorisation."""
-        req = r.message_claim(inbox_id, limit, lease_seconds, consumer, wait, enriched, since, type, channel)
+        returns ``{"data": [], "paused": True}``. ``enriched=True`` waits for AI categorisation;
+        ``analysis="completed"`` returns only messages whose injection and phishing check completed.
+        When the workspace screens agent mail (the default for new workspaces), only screened and
+        released mail is returned; ``include_unscreened=True`` / ``include_held=True`` opt in."""
+        req = r.message_claim(
+            inbox_id,
+            limit,
+            lease_seconds,
+            consumer,
+            wait,
+            enriched,
+            since,
+            type,
+            channel,
+            analysis,
+            include_unscreened,
+            include_held,
+        )
         return cast(LeaseClaim, self._c._send(req))
 
     def ack(self, message_id: str, lease_id: str, *, mark_read: Optional[bool] = None) -> AckResult:
@@ -739,12 +936,495 @@ class Drafts:
         return cast(Draft, self._c._send(r.draft_cancel(inbox_id, draft_id)))
 
 
+class Calendar:
+    """Meetings: the invites an inbox received and the meetings it sent, as calendar events.
+
+    Answers, invitations, changes and cancellations are real calendar emails (iTIP) that go through every
+    send check. Permissions: ``calendar:read``; ``respond``, ``create``, ``update`` and ``cancel`` also need
+    ``calendar:write`` and ``messages:send``, or with ``draft=True`` ``drafts:write`` instead: nothing is
+    sent, the message waits as a draft for a person to approve, and the meeting changes when it is sent
+    (409 ``calendar_event_changed`` if it changed in between). Outside the beta every call raises
+    ``NotFoundError`` (``calendar_not_enabled``). Nothing is answered on its own: only ``respond`` replies
+    to an invite.
+    """
+
+    def __init__(self, client: "Agentboxd") -> None:
+        self._c = client
+
+    def list(
+        self,
+        inbox_id: str,
+        *,
+        from_: Optional[CalendarTime] = None,
+        to: Optional[CalendarTime] = None,
+        status: Optional[CalendarEventStatus] = None,
+        role: Optional[CalendarEventRole] = None,
+        response: Optional[CalendarResponse] = None,
+        message_id: Optional[str] = None,
+        expand: Optional[Literal["occurrences"]] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> CalendarEventPage:
+        """One inbox's meetings, soonest first. By default those that end now or later (``from_``); a
+        recurring series is listed once, whatever its first date. ``expand="occurrences"`` lists each
+        occurrence of a series between ``from_`` and ``to`` instead (at most 2 years; each has ``series_id``,
+        and the page ``truncated``). ``message_id``: what one invite message did."""
+        req = r.calendar_list(
+            inbox_id,
+            from_=from_,
+            to=to,
+            status=status,
+            role=role,
+            response=response,
+            message_id=message_id,
+            expand=expand,
+            include_unscreened=include_unscreened,
+            include_held=include_held,
+            cursor=cursor,
+            limit=limit,
+        )
+        return cast(CalendarEventPage, self._c._send(req))
+
+    def list_all(
+        self,
+        *,
+        from_: Optional[CalendarTime] = None,
+        to: Optional[CalendarTime] = None,
+        status: Optional[CalendarEventStatus] = None,
+        role: Optional[CalendarEventRole] = None,
+        response: Optional[CalendarResponse] = None,
+        message_id: Optional[str] = None,
+        expand: Optional[Literal["occurrences"]] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> CalendarEventPage:
+        """The meetings of every inbox the key can see (``GET /v1/calendar/events``), with the filters of
+        ``list``."""
+        req = r.calendar_list_all(
+            from_=from_,
+            to=to,
+            status=status,
+            role=role,
+            response=response,
+            message_id=message_id,
+            expand=expand,
+            include_unscreened=include_unscreened,
+            include_held=include_held,
+            cursor=cursor,
+            limit=limit,
+        )
+        return cast(CalendarEventPage, self._c._send(req))
+
+    def get(
+        self,
+        event_id: str,
+        *,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> CalendarEvent:
+        """One meeting. An event from a held or unscreened invite comes with ``withheld`` (no title,
+        description, location, links or names) unless you opt in."""
+        req = r.calendar_get(event_id, include_unscreened, include_held)
+        return cast(CalendarEvent, self._c._send(req))
+
+    @overload
+    def respond(
+        self,
+        event_id: str,
+        response: CalendarAnswer,
+        *,
+        comment: Optional[str] = None,
+        propose: Optional[Mapping[str, CalendarTime]] = None,
+        draft: Literal[True],
+        idempotency_key: Optional[str] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> CalendarDraftResult: ...
+
+    @overload
+    def respond(
+        self,
+        event_id: str,
+        response: CalendarAnswer,
+        *,
+        comment: Optional[str] = None,
+        propose: Optional[Mapping[str, CalendarTime]] = None,
+        draft: Literal[False] = False,
+        idempotency_key: Optional[str] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> CalendarEventResult: ...
+
+    @overload
+    def respond(
+        self,
+        event_id: str,
+        response: CalendarAnswer,
+        *,
+        comment: Optional[str] = None,
+        propose: Optional[Mapping[str, CalendarTime]] = None,
+        draft: bool,
+        idempotency_key: Optional[str] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> Union[CalendarEventResult, CalendarDraftResult]: ...
+
+    def respond(
+        self,
+        event_id: str,
+        response: CalendarAnswer,
+        *,
+        comment: Optional[str] = None,
+        propose: Optional[Mapping[str, CalendarTime]] = None,
+        draft: bool = False,
+        idempotency_key: Optional[str] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> Union[CalendarEventResult, CalendarDraftResult]:
+        """Answer an invite: ``accepted``, ``declined`` or ``tentative``, with an optional ``comment``.
+        ``propose={"start": ..., "end": ...}`` suggests another time instead.
+
+        The answer goes to the ORGANIZER only (never Reply-To or the other guests), in the invite's thread.
+        With ``draft=True`` it is saved as a draft for a person to approve instead, and counts once sent
+        (:class:`CalendarDraftResult`). 422 ``calendar_reply_not_allowed`` for the inbox's own meetings,
+        published entries and cancelled meetings; 409 ``message_withheld`` while the invite is held."""
+        req = r.calendar_respond(
+            event_id,
+            response,
+            comment,
+            propose,
+            idempotency_key,
+            include_unscreened,
+            include_held,
+            draft or None,
+        )
+        return cast("Union[CalendarEventResult, CalendarDraftResult]", self._c._send(req))
+
+    @overload
+    def create(
+        self,
+        inbox_id: str,
+        *,
+        title: str,
+        start: CalendarTime,
+        attendees: Sequence[CalendarAttendeeInput],
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        all_day: Optional[bool] = None,
+        time_zone: Optional[str] = None,
+        description: Optional[str] = None,
+        location: Optional[str] = None,
+        conference_url: Optional[str] = None,
+        rrule: Optional[str] = None,
+        message: Optional[str] = None,
+        draft: Literal[True],
+        idempotency_key: Optional[str] = None,
+    ) -> CalendarDraftResult: ...
+
+    @overload
+    def create(
+        self,
+        inbox_id: str,
+        *,
+        title: str,
+        start: CalendarTime,
+        attendees: Sequence[CalendarAttendeeInput],
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        all_day: Optional[bool] = None,
+        time_zone: Optional[str] = None,
+        description: Optional[str] = None,
+        location: Optional[str] = None,
+        conference_url: Optional[str] = None,
+        rrule: Optional[str] = None,
+        message: Optional[str] = None,
+        draft: Literal[False] = False,
+        idempotency_key: Optional[str] = None,
+    ) -> CalendarEventResult: ...
+
+    @overload
+    def create(
+        self,
+        inbox_id: str,
+        *,
+        title: str,
+        start: CalendarTime,
+        attendees: Sequence[CalendarAttendeeInput],
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        all_day: Optional[bool] = None,
+        time_zone: Optional[str] = None,
+        description: Optional[str] = None,
+        location: Optional[str] = None,
+        conference_url: Optional[str] = None,
+        rrule: Optional[str] = None,
+        message: Optional[str] = None,
+        draft: bool,
+        idempotency_key: Optional[str] = None,
+    ) -> Union[CalendarEventResult, CalendarDraftResult]: ...
+
+    def create(
+        self,
+        inbox_id: str,
+        *,
+        title: str,
+        start: CalendarTime,
+        attendees: Sequence[CalendarAttendeeInput],
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        all_day: Optional[bool] = None,
+        time_zone: Optional[str] = None,
+        description: Optional[str] = None,
+        location: Optional[str] = None,
+        conference_url: Optional[str] = None,
+        rrule: Optional[str] = None,
+        message: Optional[str] = None,
+        draft: bool = False,
+        idempotency_key: Optional[str] = None,
+    ) -> Union[CalendarEventResult, CalendarDraftResult]:
+        """Organize a meeting from the inbox: one invitation to every attendee (at most 50).
+
+        ``start``/``end`` are times with an offset, or dates with ``all_day=True`` (``end`` is the day after
+        the last day); without ``end``, ``duration_minutes`` (default 30). ``time_zone`` (IANA) is how the
+        email words the time; a series is sent in it, so it keeps its local time when the clocks change.
+        ``rrule``: a series (FREQ DAILY to YEARLY, at most 500 occurrences). With
+        ``draft=True`` nothing is sent and ``event`` is None: the meeting exists once a person sends the
+        draft (under ``draft["calendar"]["event_id"]``)."""
+        req = r.calendar_create(
+            inbox_id,
+            title,
+            start,
+            attendees,
+            end,
+            duration_minutes,
+            all_day,
+            time_zone,
+            description,
+            location,
+            conference_url,
+            rrule,
+            message,
+            idempotency_key,
+            draft or None,
+        )
+        return cast("Union[CalendarEventResult, CalendarDraftResult]", self._c._send(req))
+
+    @overload
+    def update(
+        self,
+        event_id: str,
+        *,
+        title: Optional[str] = None,
+        start: Optional[CalendarTime] = None,
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        time_zone: Optional[str] = None,
+        attendees: Optional[Sequence[CalendarAttendeeInput]] = None,
+        description: NullableText = NOT_GIVEN,
+        location: NullableText = NOT_GIVEN,
+        conference_url: NullableText = NOT_GIVEN,
+        message: Optional[str] = None,
+        draft: Literal[True],
+        idempotency_key: Optional[str] = None,
+    ) -> CalendarDraftResult: ...
+
+    @overload
+    def update(
+        self,
+        event_id: str,
+        *,
+        title: Optional[str] = None,
+        start: Optional[CalendarTime] = None,
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        time_zone: Optional[str] = None,
+        attendees: Optional[Sequence[CalendarAttendeeInput]] = None,
+        description: NullableText = NOT_GIVEN,
+        location: NullableText = NOT_GIVEN,
+        conference_url: NullableText = NOT_GIVEN,
+        message: Optional[str] = None,
+        draft: Literal[False] = False,
+        idempotency_key: Optional[str] = None,
+    ) -> CalendarEventResult: ...
+
+    @overload
+    def update(
+        self,
+        event_id: str,
+        *,
+        title: Optional[str] = None,
+        start: Optional[CalendarTime] = None,
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        time_zone: Optional[str] = None,
+        attendees: Optional[Sequence[CalendarAttendeeInput]] = None,
+        description: NullableText = NOT_GIVEN,
+        location: NullableText = NOT_GIVEN,
+        conference_url: NullableText = NOT_GIVEN,
+        message: Optional[str] = None,
+        draft: bool,
+        idempotency_key: Optional[str] = None,
+    ) -> Union[CalendarEventResult, CalendarDraftResult]: ...
+
+    def update(
+        self,
+        event_id: str,
+        *,
+        title: Optional[str] = None,
+        start: Optional[CalendarTime] = None,
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        time_zone: Optional[str] = None,
+        attendees: Optional[Sequence[CalendarAttendeeInput]] = None,
+        description: NullableText = NOT_GIVEN,
+        location: NullableText = NOT_GIVEN,
+        conference_url: NullableText = NOT_GIVEN,
+        message: Optional[str] = None,
+        draft: bool = False,
+        idempotency_key: Optional[str] = None,
+    ) -> Union[CalendarEventResult, CalendarDraftResult]:
+        """Change one of the inbox's own meetings. Everyone on the list gets the new version; ``attendees``
+        replaces the list and people taken off it get a cancellation; a new time or place asks everyone to
+        answer again. ``description``/``location``/``conference_url=None`` clear them. With ``draft=True``
+        the change waits for a person to send the draft (``draft["calendar"]["removed_attendees"]`` lists
+        who it takes off). 422 ``calendar_not_organizer`` for an invite the inbox received; 409
+        ``calendar_event_changed``."""
+        req = r.calendar_update(
+            event_id,
+            title,
+            start,
+            end,
+            duration_minutes,
+            time_zone,
+            attendees,
+            description,
+            location,
+            conference_url,
+            message,
+            idempotency_key,
+            draft or None,
+        )
+        return cast("Union[CalendarEventResult, CalendarDraftResult]", self._c._send(req))
+
+    @overload
+    def cancel(
+        self,
+        event_id: str,
+        *,
+        message: Optional[str] = None,
+        draft: Literal[True],
+        idempotency_key: Optional[str] = None,
+    ) -> CalendarCancelDraftResult: ...
+
+    @overload
+    def cancel(
+        self,
+        event_id: str,
+        *,
+        message: Optional[str] = None,
+        draft: Literal[False] = False,
+        idempotency_key: Optional[str] = None,
+    ) -> CalendarCancelResult: ...
+
+    @overload
+    def cancel(
+        self,
+        event_id: str,
+        *,
+        message: Optional[str] = None,
+        draft: bool,
+        idempotency_key: Optional[str] = None,
+    ) -> Union[CalendarCancelResult, CalendarCancelDraftResult]: ...
+
+    def cancel(
+        self,
+        event_id: str,
+        *,
+        message: Optional[str] = None,
+        draft: bool = False,
+        idempotency_key: Optional[str] = None,
+    ) -> Union[CalendarCancelResult, CalendarCancelDraftResult]:
+        """Cancel one of the inbox's own meetings for everyone. On a cancelled meeting nothing is sent or
+        drafted (``message`` and ``draft`` are None). With ``draft=True`` the cancellation waits for a person
+        to send the draft."""
+        req = r.calendar_cancel(event_id, message, idempotency_key, draft or None)
+        return cast("Union[CalendarCancelResult, CalendarCancelDraftResult]", self._c._send(req))
+
+
 class Threads:
     def __init__(self, client: "Agentboxd") -> None:
         self._c = client
 
-    def list(self, inbox_id: str, cursor: Optional[str] = None, limit: Optional[int] = None) -> Page[Thread]:
-        return cast("Page[Thread]", self._c._send(r.thread_list(inbox_id, cursor, limit)))
+    def list(
+        self,
+        inbox_id: str,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+        labels: Optional[Sequence[str]] = None,
+        before: Optional[str] = None,
+        after: Optional[str] = None,
+        participant: Optional[str] = None,
+        subject: Optional[str] = None,
+        ascending: Optional[bool] = None,
+    ) -> Page[Thread]:
+        """One inbox's threads, newest activity first.
+
+        Filters combine; ``participant`` and ``subject`` are substrings.
+        """
+        return cast(
+            "Page[Thread]",
+            self._c._send(
+                r.thread_list(
+                    inbox_id,
+                    cursor,
+                    limit,
+                    labels=labels,
+                    before=before,
+                    after=after,
+                    participant=participant,
+                    subject=subject,
+                    ascending=ascending,
+                )
+            ),
+        )
+
+    def list_all(
+        self,
+        inbox_id: Optional[str] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+        labels: Optional[Sequence[str]] = None,
+        before: Optional[str] = None,
+        after: Optional[str] = None,
+        participant: Optional[str] = None,
+        subject: Optional[str] = None,
+        ascending: Optional[bool] = None,
+    ) -> Page[Thread]:
+        """Threads across every inbox the key can see, with the same filters as :meth:`list`."""
+        return cast(
+            "Page[Thread]",
+            self._c._send(
+                r.thread_list_all(
+                    cursor,
+                    limit,
+                    inbox_id=inbox_id,
+                    labels=labels,
+                    before=before,
+                    after=after,
+                    participant=participant,
+                    subject=subject,
+                    ascending=ascending,
+                )
+            ),
+        )
+
+    def delete(self, thread_id: str) -> DeletedThread:
+        """Delete a thread with all its messages and attachments."""
+        return cast(DeletedThread, self._c._send(r.thread_delete(thread_id)))
 
     def get(self, thread_id: str) -> ThreadWithMessages:
         """A thread plus its messages in order."""
@@ -772,12 +1452,15 @@ class Webhooks:
         inbox_ids: InboxIds = NOT_GIVEN,
         secret: Optional[str] = None,
         payload: Optional[WebhookPayload] = None,
+        headers: Optional[Mapping[str, str]] = None,
     ) -> Webhook:
         """Create a webhook. The returned ``secret`` is only shown here: store it.
 
         ``payload="envelope"`` sends ids, addresses, subject and labels only (no bodies).
         """
-        return cast(Webhook, self._c._send(r.webhook_create(url, events, inbox_ids, secret, payload)))
+        return cast(
+            Webhook, self._c._send(r.webhook_create(url, events, inbox_ids, secret, payload, headers))
+        )
 
     def list(self) -> Page[Webhook]:
         return cast("Page[Webhook]", self._c._send(r.webhook_list()))
@@ -793,9 +1476,10 @@ class Webhooks:
         inbox_ids: InboxIds = NOT_GIVEN,
         enabled: Optional[bool] = None,
         payload: Optional[WebhookPayload] = None,
+        headers: Optional[Mapping[str, str]] = None,
     ) -> Webhook:
         """Update a webhook. Pass ``inbox_ids=None`` explicitly to subscribe to all inboxes."""
-        req = r.webhook_update(webhook_id, url, events, inbox_ids, enabled, payload)
+        req = r.webhook_update(webhook_id, url, events, inbox_ids, enabled, payload, headers)
         return cast(Webhook, self._c._send(req))
 
     def delete(self, webhook_id: str) -> None:
@@ -805,9 +1489,63 @@ class Webhooks:
         """Send a ``webhook.test`` event."""
         return cast(WebhookTestResult, self._c._send(r.webhook_test(webhook_id)))
 
+    def rotate_secret(self, webhook_id: str, secret: Optional[str] = None) -> Webhook:
+        """Replace the signing secret (yours, or a generated one); the new ``secret`` is returned once.
+
+        Deliveries are signed with it from then on: let your endpoint accept both secrets while you switch.
+        """
+        return cast(Webhook, self._c._send(r.webhook_rotate_secret(webhook_id, secret)))
+
     def events(self) -> builtins.list[WebhookCatalogEntry]:
         """The event catalog: every event type with a description and example bodies."""
         return cast("builtins.list[WebhookCatalogEntry]", self._c._send(r.webhook_events())["data"])
+
+    def deliveries(
+        self,
+        webhook_id: str,
+        status: Optional[WebhookDeliveryStatus] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Page[WebhookDelivery]:
+        """The delivery log, newest first: status code, response time, error, attempt number, next retry."""
+        req = r.webhook_deliveries(webhook_id, status, cursor, limit)
+        return cast("Page[WebhookDelivery]", self._c._send(req))
+
+    def redeliver(
+        self, webhook_id: str, delivery_id: Optional[str] = None, *, event_id: Optional[str] = None
+    ) -> WebhookDelivery:
+        """Send one delivery again (by ``delivery_id`` or ``event_id``): the same payload, a fresh timestamp.
+
+        One attempt. 409 ``delivery_pending`` while it is still being retried,
+        409 ``webhook_disabled`` while the webhook is paused.
+        """
+        req = r.webhook_redeliver(webhook_id, delivery_id, event_id)
+        return cast(WebhookDelivery, self._c._send(req))
+
+
+class Suppressions:
+    """The workspace's own suppression list (``contacts:read`` / ``contacts:write``, workspace-wide keys)."""
+
+    def __init__(self, client: "Agentboxd") -> None:
+        self._c = client
+
+    def list(
+        self,
+        reason: Optional[SuppressionReason] = None,
+        q: Optional[str] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Page[Suppression]:
+        """Suppressed addresses (hard bounce or complaint) with reason and date, newest first."""
+        return cast("Page[Suppression]", self._c._send(r.suppression_list(reason, q, cursor, limit)))
+
+    def remove(self, address: str, confirm: bool = False) -> Suppression:
+        """Remove an address so the workspace can send to it again.
+
+        A bounce or complaint needs ``confirm=True`` (409 ``confirmation_required`` otherwise):
+        writing again to an address that bounced or complained hurts deliverability.
+        """
+        return cast(Suppression, self._c._send(r.suppression_remove(address, confirm)))
 
 
 class Lists:
@@ -847,10 +1585,21 @@ class Contacts:
         metadata: Optional[MetadataFilter] = None,
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
+        kind: Union[ContactKind, Sequence[ContactKind], None] = None,
+        domain: Optional[str] = None,
     ) -> Page[Contact]:
-        """Newest activity first. ``q`` matches address/name; ``metadata`` filters by exact value."""
-        req = r.contact_list(q, label, metadata, cursor, limit)
+        """Newest activity first. ``q`` matches address/name; ``metadata`` filters by exact value.
+
+        ``kind`` is one kind or several (every kind when left out); ``domain`` is the part after the @.
+        """
+        req = r.contact_list(q, label, metadata, cursor, limit, kind, domain)
         return cast("Page[Contact]", self._c._send(req))
+
+    def domains(
+        self, kind: Union[ContactKind, Sequence[ContactKind], None] = None, limit: Optional[int] = None
+    ) -> ContactDomainList:
+        """Contacts counted per domain (most first), free-mail providers left out. ``kind`` as in ``list``."""
+        return cast(ContactDomainList, self._c._send(r.contact_domains(kind, limit)))
 
     def get(self, contact_id: str) -> ContactWithThreads:
         """A contact plus its 10 most recent threads."""
@@ -868,13 +1617,35 @@ class Contacts:
         metadata: Optional[MetadataPatch] = None,
         add_labels: Optional[Sequence[str]] = None,
         remove_labels: Optional[Sequence[str]] = None,
+        kind: Optional[ContactKind] = None,
     ) -> Contact:
-        """Update notes (up to 10,000 chars; ``None`` clears), name, labels or metadata.
+        """Update notes (up to 10,000 chars; ``None`` clears), name, labels, metadata or kind.
 
-        Metadata is merged: given keys are set, a ``None`` value deletes the key.
+        Metadata is merged: given keys are set, a ``None`` value deletes the key. A name or kind set here is
+        never changed by later mail (``name_source`` / ``kind_source`` become ``manual``).
         """
-        req = r.contact_update(contact_id, name, notes, metadata, add_labels, remove_labels)
+        req = r.contact_update(contact_id, name, notes, metadata, add_labels, remove_labels, kind)
         return cast(Contact, self._c._send(req))
+
+    def delete(self, contact_id: str, forget: bool = False) -> None:
+        """Delete the contact (name, notes, labels, metadata); its messages stay. Needs an org-wide key.
+
+        ``forget=True``: mail from the address no longer creates the contact (only a hash of it is kept);
+        sending to it does.
+        """
+        self._c._send(r.contact_delete(contact_id, forget))
+
+    def delete_many(
+        self,
+        kind: Optional[Sequence[ContactKind]] = None,
+        domain: Optional[str] = None,
+        forget: bool = False,
+        dry_run: bool = False,
+    ) -> ContactBulkDeleteResult:
+        """Delete every contact of these kinds and/or this domain, up to 1,000 per call (``has_more``: call
+        again). ``dry_run`` only counts; ``forget`` as in ``delete``. Needs an org-wide key."""
+        req = r.contact_delete_many(kind, domain, forget, dry_run)
+        return cast(ContactBulkDeleteResult, self._c._send(req))
 
 
 class Knowledge:
@@ -1202,7 +1973,9 @@ class AgentKeys:
         return cast(AgentKeyList, self._c._send(r.agent_keys_list(inbox_id)))
 
     def register(self, inbox_id: str, *, public_jwk: Mapping[str, Any], proof: str) -> AgentKey:
-        """Register a public key (Ed25519 or P-256) with its proof of possession. At most 3 active."""
+        """Register a public key (Ed25519 or P-256) with its proof of possession.
+
+        At most 3 active and 20 in all: retired and revoked keys count."""
         return cast(AgentKey, self._c._send(r.agent_keys_register(inbox_id, public_jwk, proof)))
 
     def retire(self, inbox_id: str, kid: str) -> AgentKey:
@@ -1328,6 +2101,40 @@ class AccountApi:
         """Email ``email`` a single-use link to claim this agent-created workspace (at most 3 a day)."""
         return cast(ClaimRequestResult, self._c._send(r.signup_claim(email)))
 
+    def add_agent(self, kind: Optional[str] = None, *, expires_at: Optional[str] = None) -> AddAgentResult:
+        """Another agent (``"mailbox"`` or ``"identity"``) in this unclaimed workspace, with its own key.
+
+        Use this instead of signing up again for the same owner: up to 3 agents until a human claims
+        the workspace. ``expires_at`` (ISO 8601 time, at most about 5 years away) makes the new key stop
+        working then, with 401 ``api_key_expired``; leave it out for a key that never expires.
+        """
+        return cast(AddAgentResult, self._c._send(r.signup_add_agent(kind, expires_at)))
+
+
+class Forwarding:
+    """Automatic forwarding: every inbound message of an inbox goes to up to 3 confirmed addresses.
+
+    Adding an address emails it a confirmation link; nothing is forwarded before it confirms. Needs
+    ``inboxes:write`` (and ``messages:send`` to add or resend); listing needs ``inboxes:read``.
+    """
+
+    def __init__(self, client: "Agentboxd") -> None:
+        self._c = client
+
+    def list(self, inbox_id: str) -> builtins.list[InboxForward]:
+        return cast("builtins.list[InboxForward]", self._c._send(r.forwarding_list(inbox_id))["data"])
+
+    def add(self, inbox_id: str, address: str, *, skip_flagged: Optional[bool] = None) -> InboxForward:
+        """Adds a pending address and emails it the confirmation link."""
+        return cast(InboxForward, self._c._send(r.forwarding_add(inbox_id, address, skip_flagged)))
+
+    def resend(self, inbox_id: str, forward_id: str) -> InboxForward:
+        """A new confirmation link for a pending address."""
+        return cast(InboxForward, self._c._send(r.forwarding_resend(inbox_id, forward_id)))
+
+    def remove(self, inbox_id: str, forward_id: str) -> builtins.dict[str, Any]:
+        return cast("builtins.dict[str, Any]", self._c._send(r.forwarding_remove(inbox_id, forward_id)))
+
 
 class EscalationApi:
     """Human on call (permission ``escalation:manage``): who is emailed when an agent's mail needs a person.
@@ -1401,8 +2208,10 @@ class Agentboxd(_BaseClient):
         self.domains = Domains(self)
         self.messages = Messages(self)
         self.drafts = Drafts(self)
+        self.calendar = Calendar(self)
         self.threads = Threads(self)
         self.webhooks = Webhooks(self)
+        self.suppressions = Suppressions(self)
         self.contacts = Contacts(self)
         self.knowledge = Knowledge(self)
         self.lists = Lists(self)
@@ -1410,6 +2219,7 @@ class Agentboxd(_BaseClient):
         self.identities = Identities(self)
         self.account = AccountApi(self)
         self.escalation = EscalationApi(self)
+        self.forwarding = Forwarding(self)
         self.agents = Agents(self)
         self.directory = Directory(self)
         self.public_directory = PublicDirectory(self)
@@ -1594,11 +2404,14 @@ class AsyncInboxes:
         display_name: Nullable = NOT_GIVEN,
         metadata: Optional[MetadataPatch] = None,
         ttl_seconds: Optional[int] = None,
+        promotions_filter: Union[bool, NotGiven, None] = NOT_GIVEN,
     ) -> Inbox:
         """Change the display name (``None`` clears it) or metadata (merged; ``None`` deletes a key).
 
-        ``ttl_seconds`` extends a temporary inbox from now (at most 24 h after its creation)."""
-        return cast(Inbox, await self._c._send(r.inbox_update(inbox_id, display_name, metadata, ttl_seconds)))
+        ``ttl_seconds`` extends a temporary inbox from now (at most 24 h after its creation).
+        ``promotions_filter`` turns the Promotions & spam view on or off (``None``: back to the default)."""
+        req = r.inbox_update(inbox_id, display_name, metadata, ttl_seconds, promotions_filter)
+        return cast(Inbox, await self._c._send(req))
 
     async def delete(self, inbox_id: str) -> None:
         """Soft-delete an inbox (its address is never reused). A temporary inbox is wiped at once."""
@@ -1624,6 +2437,9 @@ class AsyncInboxes:
         wait: float = _consume.DEFAULT_WAIT,
         consumer: Optional[str] = None,
         enriched: Optional[bool] = None,
+        analysis: Optional[Literal["completed"]] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
         stop: "Optional[asyncio.Event]" = None,
         retry_delay_seconds: float = 5,
         max_retry_delay_seconds: float = 300,
@@ -1643,6 +2459,9 @@ class AsyncInboxes:
                 wait=wait,
                 consumer=consumer,
                 enriched=enriched,
+                analysis=analysis,
+                include_unscreened=include_unscreened,
+                include_held=include_held,
                 retry_delay_seconds=retry_delay_seconds,
                 max_retry_delay_seconds=max_retry_delay_seconds,
                 paused_poll_seconds=paused_poll_seconds,
@@ -1666,6 +2485,12 @@ class AsyncDomains:
 
     async def get(self, domain_id: str) -> Domain:
         return cast(Domain, await self._c._send(r.domain_get(domain_id)))
+
+    async def zone_file(self, domain_id: str) -> DomainZoneFile:
+        """The records to publish as a BIND zone file (``filename`` and ``content``).
+
+        Write ``content`` to a file and import it at a DNS provider that takes one."""
+        return cast(DomainZoneFile, await self._c._send(r.domain_zone_file(domain_id)))
 
     async def verify(self, domain_id: str) -> Domain:
         """Check the DNS records now (at most once per 10 s per domain)."""
@@ -1732,6 +2557,50 @@ class AsyncMessages:
         )
         return cast(Message, await self._c._send(req))
 
+    async def forward(
+        self,
+        inbox_id: str,
+        message_id: str,
+        to: Recipients,
+        cc: Optional[Recipients] = None,
+        bcc: Optional[Recipients] = None,
+        text: Optional[str] = None,
+        html: Optional[str] = None,
+        include_attachments: Optional[bool] = None,
+        labels: Optional[Sequence[str]] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Message:
+        """Forward a message to new recipients, in a new thread: ``text`` (your note) above the original,
+        with its attachments unless ``include_attachments=False``."""
+        req = r.message_forward(
+            inbox_id, message_id, to, cc, bcc, text, html, include_attachments, labels, idempotency_key
+        )
+        return cast(Message, await self._c._send(req))
+
+    async def batch_get(
+        self,
+        ids: Sequence[str],
+        *,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> BatchMessages:
+        """Up to 100 messages by id; ids you can't see come back in ``missing``."""
+        req = r.messages_batch_get(ids, include_unscreened, include_held)
+        return cast(BatchMessages, await self._c._send(req))
+
+    async def batch_update(
+        self,
+        ids: Sequence[str],
+        add_labels: Optional[Sequence[str]] = None,
+        remove_labels: Optional[Sequence[str]] = None,
+        is_read: Optional[bool] = None,
+    ) -> BatchMessages:
+        """The same label and read changes on up to 100 messages."""
+        return cast(
+            BatchMessages,
+            await self._c._send(r.messages_batch_update(ids, add_labels, remove_labels, is_read)),
+        )
+
     async def reply(
         self,
         inbox_id: str,
@@ -1774,18 +2643,79 @@ class AsyncMessages:
         include_blocked: Optional[bool] = None,
         channel: Optional[MessageChannel] = None,
         type: Optional[MessageType] = None,
+        screening: Optional[ScreeningState] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+        promotions: Optional[Literal["include", "exclude", "only"]] = None,
+        status: Optional[MessageStatus] = None,
     ) -> Page[Message]:
         """List messages, newest first. ``labels`` filters to messages having all of them.
 
         ``include_blocked=True`` also returns mail stopped by the receive lists (label ``blocked``).
+        ``screening="held"`` returns only received mail in that screening state.
+        ``status="bounced"`` (with ``direction="outbound"``) returns sent mail that bounced.
+        ``promotions="exclude"`` leaves out mail labelled ``ai:sales`` or ``local:spam``; ``"only"`` lists
+        just that.
         """
         req = r.message_list(
-            inbox_id, labels, is_read, direction, cursor, limit, include_blocked, channel, type
+            inbox_id,
+            labels,
+            is_read,
+            direction,
+            cursor,
+            limit,
+            include_blocked,
+            channel,
+            type,
+            screening,
+            include_unscreened,
+            include_held,
+            promotions,
+            status,
         )
         return cast("Page[Message]", await self._c._send(req))
 
-    async def get(self, message_id: str) -> Message:
-        return cast(Message, await self._c._send(r.message_get(message_id)))
+    async def list_all(
+        self,
+        labels: Optional[Sequence[str]] = None,
+        is_read: Optional[bool] = None,
+        direction: Optional[Direction] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+        include_blocked: Optional[bool] = None,
+        channel: Optional[MessageChannel] = None,
+        type: Optional[MessageType] = None,
+        screening: Optional[ScreeningState] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+        status: Optional[MessageStatus] = None,
+    ) -> Page[Message]:
+        """Messages of every inbox, newest first. See :meth:`Messages.list_all`."""
+        req = r.message_list_all(
+            labels,
+            is_read,
+            direction,
+            cursor,
+            limit,
+            include_blocked,
+            channel,
+            type,
+            screening,
+            include_unscreened,
+            include_held,
+            status,
+        )
+        return cast("Page[Message]", await self._c._send(req))
+
+    async def get(
+        self,
+        message_id: str,
+        *,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> Message:
+        """One message. See :meth:`Messages.get`."""
+        return cast(Message, await self._c._send(r.message_get(message_id, include_unscreened, include_held)))
 
     async def update(
         self,
@@ -1796,6 +2726,10 @@ class AsyncMessages:
     ) -> Message:
         req = r.message_update(message_id, add_labels, remove_labels, is_read)
         return cast(Message, await self._c._send(req))
+
+    async def release(self, message_id: str) -> Message:
+        """Release a held message to agents. See :meth:`Messages.release`."""
+        return cast(Message, await self._c._send(r.message_release(message_id)))
 
     async def draft_reply(
         self, message_id: str, instructions: Optional[str] = None, *, save: Optional[bool] = None
@@ -1835,12 +2769,25 @@ class AsyncMessages:
         direction: Optional[Direction] = None,
         channel: Optional[MessageChannel] = None,
         type: Optional[MessageType] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
     ) -> Optional[Message]:
         """Long-poll until a matching message arrives, or return ``None`` after ``timeout`` seconds.
 
         See :meth:`Messages.wait`.
         """
-        req = r.message_wait(inbox_id, timeout, since, from_, subject, direction, channel, type)
+        req = r.message_wait(
+            inbox_id,
+            timeout,
+            since,
+            from_,
+            subject,
+            direction,
+            channel,
+            type,
+            include_unscreened,
+            include_held,
+        )
         return cast(Optional[Message], (await self._c._send(req))["data"])
 
     async def wait_for_verification(
@@ -1849,9 +2796,12 @@ class AsyncMessages:
         timeout: float = 30,
         since: Optional[str] = None,
         from_: Optional[str] = None,
+        include_unauthenticated: Optional[bool] = None,
     ) -> Optional[VerificationResult]:
-        """Newest verification code/link after ``since``, waiting up to ``timeout`` s. ``None`` on timeout."""
-        req = r.message_wait_for_verification(inbox_id, timeout, since, from_)
+        """Newest verification code/link after ``since``, waiting up to ``timeout`` s. ``None`` on timeout.
+
+        Possible spoofs (sender failed authentication) are skipped unless ``include_unauthenticated=True``."""
+        req = r.message_wait_for_verification(inbox_id, timeout, since, from_, include_unauthenticated)
         return cast(Optional[VerificationResult], (await self._c._send(req))["data"])
 
     async def claim(
@@ -1866,9 +2816,25 @@ class AsyncMessages:
         since: Optional[str] = None,
         type: Optional[MessageType] = None,
         channel: Optional[MessageChannel] = None,
+        analysis: Optional[Literal["completed"]] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
     ) -> LeaseClaim:
         """Claim/ack queue: lease inbound messages. See :meth:`Messages.claim`."""
-        req = r.message_claim(inbox_id, limit, lease_seconds, consumer, wait, enriched, since, type, channel)
+        req = r.message_claim(
+            inbox_id,
+            limit,
+            lease_seconds,
+            consumer,
+            wait,
+            enriched,
+            since,
+            type,
+            channel,
+            analysis,
+            include_unscreened,
+            include_held,
+        )
         return cast(LeaseClaim, await self._c._send(req))
 
     async def ack(self, message_id: str, lease_id: str, *, mark_read: Optional[bool] = None) -> AckResult:
@@ -2033,14 +2999,493 @@ class AsyncDrafts:
         return cast(Draft, await self._c._send(r.draft_cancel(inbox_id, draft_id)))
 
 
+class AsyncCalendar:
+    """Async :class:`Calendar`: the invites an inbox received and the meetings it sent, as calendar events.
+
+    Answers, invitations, changes and cancellations are real calendar emails (iTIP) that go through every
+    send check. Permissions: ``calendar:read``; ``respond``, ``create``, ``update`` and ``cancel`` also need
+    ``calendar:write`` and ``messages:send``, or with ``draft=True`` ``drafts:write`` instead (a person
+    approves and sends the draft). Outside the beta every call raises ``NotFoundError``
+    (``calendar_not_enabled``). Nothing is answered on its own: only ``respond`` replies to an invite.
+    """
+
+    def __init__(self, client: "AsyncAgentboxd") -> None:
+        self._c = client
+
+    async def list(
+        self,
+        inbox_id: str,
+        *,
+        from_: Optional[CalendarTime] = None,
+        to: Optional[CalendarTime] = None,
+        status: Optional[CalendarEventStatus] = None,
+        role: Optional[CalendarEventRole] = None,
+        response: Optional[CalendarResponse] = None,
+        message_id: Optional[str] = None,
+        expand: Optional[Literal["occurrences"]] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> CalendarEventPage:
+        """One inbox's meetings, soonest first. By default those that end now or later (``from_``); a
+        recurring series is listed once, whatever its first date. ``expand="occurrences"`` lists each
+        occurrence of a series between ``from_`` and ``to`` instead (at most 2 years; each has ``series_id``,
+        and the page ``truncated``). ``message_id``: what one invite message did."""
+        req = r.calendar_list(
+            inbox_id,
+            from_=from_,
+            to=to,
+            status=status,
+            role=role,
+            response=response,
+            message_id=message_id,
+            expand=expand,
+            include_unscreened=include_unscreened,
+            include_held=include_held,
+            cursor=cursor,
+            limit=limit,
+        )
+        return cast(CalendarEventPage, await self._c._send(req))
+
+    async def list_all(
+        self,
+        *,
+        from_: Optional[CalendarTime] = None,
+        to: Optional[CalendarTime] = None,
+        status: Optional[CalendarEventStatus] = None,
+        role: Optional[CalendarEventRole] = None,
+        response: Optional[CalendarResponse] = None,
+        message_id: Optional[str] = None,
+        expand: Optional[Literal["occurrences"]] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> CalendarEventPage:
+        """The meetings of every inbox the key can see (``GET /v1/calendar/events``), with the filters of
+        ``list``."""
+        req = r.calendar_list_all(
+            from_=from_,
+            to=to,
+            status=status,
+            role=role,
+            response=response,
+            message_id=message_id,
+            expand=expand,
+            include_unscreened=include_unscreened,
+            include_held=include_held,
+            cursor=cursor,
+            limit=limit,
+        )
+        return cast(CalendarEventPage, await self._c._send(req))
+
+    async def get(
+        self,
+        event_id: str,
+        *,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> CalendarEvent:
+        """One meeting. An event from a held or unscreened invite comes with ``withheld`` (no title,
+        description, location, links or names) unless you opt in."""
+        req = r.calendar_get(event_id, include_unscreened, include_held)
+        return cast(CalendarEvent, await self._c._send(req))
+
+    @overload
+    async def respond(
+        self,
+        event_id: str,
+        response: CalendarAnswer,
+        *,
+        comment: Optional[str] = None,
+        propose: Optional[Mapping[str, CalendarTime]] = None,
+        draft: Literal[True],
+        idempotency_key: Optional[str] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> CalendarDraftResult: ...
+
+    @overload
+    async def respond(
+        self,
+        event_id: str,
+        response: CalendarAnswer,
+        *,
+        comment: Optional[str] = None,
+        propose: Optional[Mapping[str, CalendarTime]] = None,
+        draft: Literal[False] = False,
+        idempotency_key: Optional[str] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> CalendarEventResult: ...
+
+    @overload
+    async def respond(
+        self,
+        event_id: str,
+        response: CalendarAnswer,
+        *,
+        comment: Optional[str] = None,
+        propose: Optional[Mapping[str, CalendarTime]] = None,
+        draft: bool,
+        idempotency_key: Optional[str] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> Union[CalendarEventResult, CalendarDraftResult]: ...
+
+    async def respond(
+        self,
+        event_id: str,
+        response: CalendarAnswer,
+        *,
+        comment: Optional[str] = None,
+        propose: Optional[Mapping[str, CalendarTime]] = None,
+        draft: bool = False,
+        idempotency_key: Optional[str] = None,
+        include_unscreened: Optional[bool] = None,
+        include_held: Optional[bool] = None,
+    ) -> Union[CalendarEventResult, CalendarDraftResult]:
+        """Answer an invite: ``accepted``, ``declined`` or ``tentative``, with an optional ``comment``.
+        ``propose={"start": ..., "end": ...}`` suggests another time instead.
+
+        The answer goes to the ORGANIZER only (never Reply-To or the other guests), in the invite's thread.
+        With ``draft=True`` it is saved as a draft for a person to approve instead, and counts once sent
+        (:class:`CalendarDraftResult`). 422 ``calendar_reply_not_allowed`` for the inbox's own meetings,
+        published entries and cancelled meetings; 409 ``message_withheld`` while the invite is held."""
+        req = r.calendar_respond(
+            event_id,
+            response,
+            comment,
+            propose,
+            idempotency_key,
+            include_unscreened,
+            include_held,
+            draft or None,
+        )
+        return cast("Union[CalendarEventResult, CalendarDraftResult]", await self._c._send(req))
+
+    @overload
+    async def create(
+        self,
+        inbox_id: str,
+        *,
+        title: str,
+        start: CalendarTime,
+        attendees: Sequence[CalendarAttendeeInput],
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        all_day: Optional[bool] = None,
+        time_zone: Optional[str] = None,
+        description: Optional[str] = None,
+        location: Optional[str] = None,
+        conference_url: Optional[str] = None,
+        rrule: Optional[str] = None,
+        message: Optional[str] = None,
+        draft: Literal[True],
+        idempotency_key: Optional[str] = None,
+    ) -> CalendarDraftResult: ...
+
+    @overload
+    async def create(
+        self,
+        inbox_id: str,
+        *,
+        title: str,
+        start: CalendarTime,
+        attendees: Sequence[CalendarAttendeeInput],
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        all_day: Optional[bool] = None,
+        time_zone: Optional[str] = None,
+        description: Optional[str] = None,
+        location: Optional[str] = None,
+        conference_url: Optional[str] = None,
+        rrule: Optional[str] = None,
+        message: Optional[str] = None,
+        draft: Literal[False] = False,
+        idempotency_key: Optional[str] = None,
+    ) -> CalendarEventResult: ...
+
+    @overload
+    async def create(
+        self,
+        inbox_id: str,
+        *,
+        title: str,
+        start: CalendarTime,
+        attendees: Sequence[CalendarAttendeeInput],
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        all_day: Optional[bool] = None,
+        time_zone: Optional[str] = None,
+        description: Optional[str] = None,
+        location: Optional[str] = None,
+        conference_url: Optional[str] = None,
+        rrule: Optional[str] = None,
+        message: Optional[str] = None,
+        draft: bool,
+        idempotency_key: Optional[str] = None,
+    ) -> Union[CalendarEventResult, CalendarDraftResult]: ...
+
+    async def create(
+        self,
+        inbox_id: str,
+        *,
+        title: str,
+        start: CalendarTime,
+        attendees: Sequence[CalendarAttendeeInput],
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        all_day: Optional[bool] = None,
+        time_zone: Optional[str] = None,
+        description: Optional[str] = None,
+        location: Optional[str] = None,
+        conference_url: Optional[str] = None,
+        rrule: Optional[str] = None,
+        message: Optional[str] = None,
+        draft: bool = False,
+        idempotency_key: Optional[str] = None,
+    ) -> Union[CalendarEventResult, CalendarDraftResult]:
+        """Organize a meeting from the inbox: one invitation to every attendee (at most 50).
+
+        ``start``/``end`` are times with an offset, or dates with ``all_day=True`` (``end`` is the day after
+        the last day); without ``end``, ``duration_minutes`` (default 30). ``time_zone`` (IANA) is how the
+        email words the time; a series is sent in it, so it keeps its local time when the clocks change.
+        ``rrule``: a series (FREQ DAILY to YEARLY, at most 500 occurrences). With
+        ``draft=True`` nothing is sent and ``event`` is None: the meeting exists once a person sends the
+        draft (under ``draft["calendar"]["event_id"]``)."""
+        req = r.calendar_create(
+            inbox_id,
+            title,
+            start,
+            attendees,
+            end,
+            duration_minutes,
+            all_day,
+            time_zone,
+            description,
+            location,
+            conference_url,
+            rrule,
+            message,
+            idempotency_key,
+            draft or None,
+        )
+        return cast("Union[CalendarEventResult, CalendarDraftResult]", await self._c._send(req))
+
+    @overload
+    async def update(
+        self,
+        event_id: str,
+        *,
+        title: Optional[str] = None,
+        start: Optional[CalendarTime] = None,
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        time_zone: Optional[str] = None,
+        attendees: Optional[Sequence[CalendarAttendeeInput]] = None,
+        description: NullableText = NOT_GIVEN,
+        location: NullableText = NOT_GIVEN,
+        conference_url: NullableText = NOT_GIVEN,
+        message: Optional[str] = None,
+        draft: Literal[True],
+        idempotency_key: Optional[str] = None,
+    ) -> CalendarDraftResult: ...
+
+    @overload
+    async def update(
+        self,
+        event_id: str,
+        *,
+        title: Optional[str] = None,
+        start: Optional[CalendarTime] = None,
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        time_zone: Optional[str] = None,
+        attendees: Optional[Sequence[CalendarAttendeeInput]] = None,
+        description: NullableText = NOT_GIVEN,
+        location: NullableText = NOT_GIVEN,
+        conference_url: NullableText = NOT_GIVEN,
+        message: Optional[str] = None,
+        draft: Literal[False] = False,
+        idempotency_key: Optional[str] = None,
+    ) -> CalendarEventResult: ...
+
+    @overload
+    async def update(
+        self,
+        event_id: str,
+        *,
+        title: Optional[str] = None,
+        start: Optional[CalendarTime] = None,
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        time_zone: Optional[str] = None,
+        attendees: Optional[Sequence[CalendarAttendeeInput]] = None,
+        description: NullableText = NOT_GIVEN,
+        location: NullableText = NOT_GIVEN,
+        conference_url: NullableText = NOT_GIVEN,
+        message: Optional[str] = None,
+        draft: bool,
+        idempotency_key: Optional[str] = None,
+    ) -> Union[CalendarEventResult, CalendarDraftResult]: ...
+
+    async def update(
+        self,
+        event_id: str,
+        *,
+        title: Optional[str] = None,
+        start: Optional[CalendarTime] = None,
+        end: Optional[CalendarTime] = None,
+        duration_minutes: Optional[int] = None,
+        time_zone: Optional[str] = None,
+        attendees: Optional[Sequence[CalendarAttendeeInput]] = None,
+        description: NullableText = NOT_GIVEN,
+        location: NullableText = NOT_GIVEN,
+        conference_url: NullableText = NOT_GIVEN,
+        message: Optional[str] = None,
+        draft: bool = False,
+        idempotency_key: Optional[str] = None,
+    ) -> Union[CalendarEventResult, CalendarDraftResult]:
+        """Change one of the inbox's own meetings. Everyone on the list gets the new version; ``attendees``
+        replaces the list and people taken off it get a cancellation; a new time or place asks everyone to
+        answer again. ``description``/``location``/``conference_url=None`` clear them. With ``draft=True``
+        the change waits for a person to send the draft (``draft["calendar"]["removed_attendees"]`` lists
+        who it takes off). 422 ``calendar_not_organizer`` for an invite the inbox received; 409
+        ``calendar_event_changed``."""
+        req = r.calendar_update(
+            event_id,
+            title,
+            start,
+            end,
+            duration_minutes,
+            time_zone,
+            attendees,
+            description,
+            location,
+            conference_url,
+            message,
+            idempotency_key,
+            draft or None,
+        )
+        return cast("Union[CalendarEventResult, CalendarDraftResult]", await self._c._send(req))
+
+    @overload
+    async def cancel(
+        self,
+        event_id: str,
+        *,
+        message: Optional[str] = None,
+        draft: Literal[True],
+        idempotency_key: Optional[str] = None,
+    ) -> CalendarCancelDraftResult: ...
+
+    @overload
+    async def cancel(
+        self,
+        event_id: str,
+        *,
+        message: Optional[str] = None,
+        draft: Literal[False] = False,
+        idempotency_key: Optional[str] = None,
+    ) -> CalendarCancelResult: ...
+
+    @overload
+    async def cancel(
+        self,
+        event_id: str,
+        *,
+        message: Optional[str] = None,
+        draft: bool,
+        idempotency_key: Optional[str] = None,
+    ) -> Union[CalendarCancelResult, CalendarCancelDraftResult]: ...
+
+    async def cancel(
+        self,
+        event_id: str,
+        *,
+        message: Optional[str] = None,
+        draft: bool = False,
+        idempotency_key: Optional[str] = None,
+    ) -> Union[CalendarCancelResult, CalendarCancelDraftResult]:
+        """Cancel one of the inbox's own meetings for everyone. On a cancelled meeting nothing is sent or
+        drafted (``message`` and ``draft`` are None). With ``draft=True`` the cancellation waits for a person
+        to send the draft."""
+        req = r.calendar_cancel(event_id, message, idempotency_key, draft or None)
+        return cast("Union[CalendarCancelResult, CalendarCancelDraftResult]", await self._c._send(req))
+
+
 class AsyncThreads:
     def __init__(self, client: "AsyncAgentboxd") -> None:
         self._c = client
 
     async def list(
-        self, inbox_id: str, cursor: Optional[str] = None, limit: Optional[int] = None
+        self,
+        inbox_id: str,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+        labels: Optional[Sequence[str]] = None,
+        before: Optional[str] = None,
+        after: Optional[str] = None,
+        participant: Optional[str] = None,
+        subject: Optional[str] = None,
+        ascending: Optional[bool] = None,
     ) -> Page[Thread]:
-        return cast("Page[Thread]", await self._c._send(r.thread_list(inbox_id, cursor, limit)))
+        """One inbox's threads, newest activity first.
+
+        Filters combine; ``participant`` and ``subject`` are substrings.
+        """
+        return cast(
+            "Page[Thread]",
+            await self._c._send(
+                r.thread_list(
+                    inbox_id,
+                    cursor,
+                    limit,
+                    labels=labels,
+                    before=before,
+                    after=after,
+                    participant=participant,
+                    subject=subject,
+                    ascending=ascending,
+                )
+            ),
+        )
+
+    async def list_all(
+        self,
+        inbox_id: Optional[str] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+        labels: Optional[Sequence[str]] = None,
+        before: Optional[str] = None,
+        after: Optional[str] = None,
+        participant: Optional[str] = None,
+        subject: Optional[str] = None,
+        ascending: Optional[bool] = None,
+    ) -> Page[Thread]:
+        """Threads across every inbox the key can see, with the same filters as :meth:`list`."""
+        return cast(
+            "Page[Thread]",
+            await self._c._send(
+                r.thread_list_all(
+                    cursor,
+                    limit,
+                    inbox_id=inbox_id,
+                    labels=labels,
+                    before=before,
+                    after=after,
+                    participant=participant,
+                    subject=subject,
+                    ascending=ascending,
+                )
+            ),
+        )
+
+    async def delete(self, thread_id: str) -> DeletedThread:
+        """Delete a thread with all its messages and attachments."""
+        return cast(DeletedThread, await self._c._send(r.thread_delete(thread_id)))
 
     async def get(self, thread_id: str) -> ThreadWithMessages:
         """A thread plus its messages in order."""
@@ -2070,12 +3515,13 @@ class AsyncWebhooks:
         inbox_ids: InboxIds = NOT_GIVEN,
         secret: Optional[str] = None,
         payload: Optional[WebhookPayload] = None,
+        headers: Optional[Mapping[str, str]] = None,
     ) -> Webhook:
         """Create a webhook. The returned ``secret`` is only shown here: store it.
 
         ``payload="envelope"`` sends ids, addresses, subject and labels only (no bodies).
         """
-        req = r.webhook_create(url, events, inbox_ids, secret, payload)
+        req = r.webhook_create(url, events, inbox_ids, secret, payload, headers)
         return cast(Webhook, await self._c._send(req))
 
     async def list(self) -> Page[Webhook]:
@@ -2092,9 +3538,10 @@ class AsyncWebhooks:
         inbox_ids: InboxIds = NOT_GIVEN,
         enabled: Optional[bool] = None,
         payload: Optional[WebhookPayload] = None,
+        headers: Optional[Mapping[str, str]] = None,
     ) -> Webhook:
         """Update a webhook. Pass ``inbox_ids=None`` explicitly to subscribe to all inboxes."""
-        req = r.webhook_update(webhook_id, url, events, inbox_ids, enabled, payload)
+        req = r.webhook_update(webhook_id, url, events, inbox_ids, enabled, payload, headers)
         return cast(Webhook, await self._c._send(req))
 
     async def delete(self, webhook_id: str) -> None:
@@ -2104,9 +3551,63 @@ class AsyncWebhooks:
         """Send a ``webhook.test`` event."""
         return cast(WebhookTestResult, await self._c._send(r.webhook_test(webhook_id)))
 
+    async def rotate_secret(self, webhook_id: str, secret: Optional[str] = None) -> Webhook:
+        """Replace the signing secret (yours, or a generated one); the new ``secret`` is returned once.
+
+        Deliveries are signed with it from then on: let your endpoint accept both secrets while you switch.
+        """
+        return cast(Webhook, await self._c._send(r.webhook_rotate_secret(webhook_id, secret)))
+
     async def events(self) -> builtins.list[WebhookCatalogEntry]:
         """The event catalog: every event type with a description and example bodies."""
         return cast("builtins.list[WebhookCatalogEntry]", (await self._c._send(r.webhook_events()))["data"])
+
+    async def deliveries(
+        self,
+        webhook_id: str,
+        status: Optional[WebhookDeliveryStatus] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Page[WebhookDelivery]:
+        """The delivery log, newest first: status code, response time, error, attempt number, next retry."""
+        req = r.webhook_deliveries(webhook_id, status, cursor, limit)
+        return cast("Page[WebhookDelivery]", await self._c._send(req))
+
+    async def redeliver(
+        self, webhook_id: str, delivery_id: Optional[str] = None, *, event_id: Optional[str] = None
+    ) -> WebhookDelivery:
+        """Send one delivery again (by ``delivery_id`` or ``event_id``): the same payload, a fresh timestamp.
+
+        One attempt. 409 ``delivery_pending`` while it is still being retried,
+        409 ``webhook_disabled`` while the webhook is paused.
+        """
+        req = r.webhook_redeliver(webhook_id, delivery_id, event_id)
+        return cast(WebhookDelivery, await self._c._send(req))
+
+
+class AsyncSuppressions:
+    """The workspace's own suppression list (``contacts:read`` / ``contacts:write``, workspace-wide keys)."""
+
+    def __init__(self, client: "AsyncAgentboxd") -> None:
+        self._c = client
+
+    async def list(
+        self,
+        reason: Optional[SuppressionReason] = None,
+        q: Optional[str] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Page[Suppression]:
+        """Suppressed addresses (hard bounce or complaint) with reason and date, newest first."""
+        return cast("Page[Suppression]", await self._c._send(r.suppression_list(reason, q, cursor, limit)))
+
+    async def remove(self, address: str, confirm: bool = False) -> Suppression:
+        """Remove an address so the workspace can send to it again.
+
+        A bounce or complaint needs ``confirm=True`` (409 ``confirmation_required`` otherwise):
+        writing again to an address that bounced or complained hurts deliverability.
+        """
+        return cast(Suppression, await self._c._send(r.suppression_remove(address, confirm)))
 
 
 class AsyncLists:
@@ -2146,10 +3647,21 @@ class AsyncContacts:
         metadata: Optional[MetadataFilter] = None,
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
+        kind: Union[ContactKind, Sequence[ContactKind], None] = None,
+        domain: Optional[str] = None,
     ) -> Page[Contact]:
-        """Newest activity first. ``q`` matches address/name; ``metadata`` filters by exact value."""
-        req = r.contact_list(q, label, metadata, cursor, limit)
+        """Newest activity first. ``q`` matches address/name; ``metadata`` filters by exact value.
+
+        ``kind`` is one kind or several (every kind when left out); ``domain`` is the part after the @.
+        """
+        req = r.contact_list(q, label, metadata, cursor, limit, kind, domain)
         return cast("Page[Contact]", await self._c._send(req))
+
+    async def domains(
+        self, kind: Union[ContactKind, Sequence[ContactKind], None] = None, limit: Optional[int] = None
+    ) -> ContactDomainList:
+        """Contacts counted per domain (most first), free-mail providers left out. ``kind`` as in ``list``."""
+        return cast(ContactDomainList, await self._c._send(r.contact_domains(kind, limit)))
 
     async def get(self, contact_id: str) -> ContactWithThreads:
         """A contact plus its 10 most recent threads."""
@@ -2167,13 +3679,35 @@ class AsyncContacts:
         metadata: Optional[MetadataPatch] = None,
         add_labels: Optional[Sequence[str]] = None,
         remove_labels: Optional[Sequence[str]] = None,
+        kind: Optional[ContactKind] = None,
     ) -> Contact:
-        """Update notes (up to 10,000 chars; ``None`` clears), name, labels or metadata.
+        """Update notes (up to 10,000 chars; ``None`` clears), name, labels, metadata or kind.
 
-        Metadata is merged: given keys are set, a ``None`` value deletes the key.
+        Metadata is merged: given keys are set, a ``None`` value deletes the key. A name or kind set here is
+        never changed by later mail (``name_source`` / ``kind_source`` become ``manual``).
         """
-        req = r.contact_update(contact_id, name, notes, metadata, add_labels, remove_labels)
+        req = r.contact_update(contact_id, name, notes, metadata, add_labels, remove_labels, kind)
         return cast(Contact, await self._c._send(req))
+
+    async def delete(self, contact_id: str, forget: bool = False) -> None:
+        """Delete the contact (name, notes, labels, metadata); its messages stay. Needs an org-wide key.
+
+        ``forget=True``: mail from the address no longer creates the contact (only a hash of it is kept);
+        sending to it does.
+        """
+        await self._c._send(r.contact_delete(contact_id, forget))
+
+    async def delete_many(
+        self,
+        kind: Optional[Sequence[ContactKind]] = None,
+        domain: Optional[str] = None,
+        forget: bool = False,
+        dry_run: bool = False,
+    ) -> ContactBulkDeleteResult:
+        """Delete every contact of these kinds and/or this domain, up to 1,000 per call (``has_more``: call
+        again). ``dry_run`` only counts; ``forget`` as in ``delete``. Needs an org-wide key."""
+        req = r.contact_delete_many(kind, domain, forget, dry_run)
+        return cast(ContactBulkDeleteResult, await self._c._send(req))
 
 
 class AsyncKnowledge:
@@ -2513,6 +4047,30 @@ class AsyncAccountApi:
     async def request_claim(self, email: str) -> ClaimRequestResult:
         return cast(ClaimRequestResult, await self._c._send(r.signup_claim(email)))
 
+    async def add_agent(
+        self, kind: Optional[str] = None, *, expires_at: Optional[str] = None
+    ) -> AddAgentResult:
+        return cast(AddAgentResult, await self._c._send(r.signup_add_agent(kind, expires_at)))
+
+
+class AsyncForwarding:
+    """Async :class:`Forwarding`."""
+
+    def __init__(self, client: "AsyncAgentboxd") -> None:
+        self._c = client
+
+    async def list(self, inbox_id: str) -> builtins.list[InboxForward]:
+        return cast("builtins.list[InboxForward]", (await self._c._send(r.forwarding_list(inbox_id)))["data"])
+
+    async def add(self, inbox_id: str, address: str, *, skip_flagged: Optional[bool] = None) -> InboxForward:
+        return cast(InboxForward, await self._c._send(r.forwarding_add(inbox_id, address, skip_flagged)))
+
+    async def resend(self, inbox_id: str, forward_id: str) -> InboxForward:
+        return cast(InboxForward, await self._c._send(r.forwarding_resend(inbox_id, forward_id)))
+
+    async def remove(self, inbox_id: str, forward_id: str) -> builtins.dict[str, Any]:
+        return cast("builtins.dict[str, Any]", await self._c._send(r.forwarding_remove(inbox_id, forward_id)))
+
 
 class AsyncEscalationApi:
     """Async :class:`EscalationApi`."""
@@ -2575,8 +4133,10 @@ class AsyncAgentboxd(_BaseClient):
         self.domains = AsyncDomains(self)
         self.messages = AsyncMessages(self)
         self.drafts = AsyncDrafts(self)
+        self.calendar = AsyncCalendar(self)
         self.threads = AsyncThreads(self)
         self.webhooks = AsyncWebhooks(self)
+        self.suppressions = AsyncSuppressions(self)
         self.contacts = AsyncContacts(self)
         self.knowledge = AsyncKnowledge(self)
         self.lists = AsyncLists(self)
@@ -2584,6 +4144,7 @@ class AsyncAgentboxd(_BaseClient):
         self.identities = AsyncIdentities(self)
         self.account = AsyncAccountApi(self)
         self.escalation = AsyncEscalationApi(self)
+        self.forwarding = AsyncForwarding(self)
         self.agents = AsyncAgents(self)
         self.directory = AsyncDirectory(self)
         self.public_directory = AsyncPublicDirectory(self)

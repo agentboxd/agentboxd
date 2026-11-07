@@ -21,6 +21,8 @@ class AgentboxdError(Exception):
     (e.g. ``recipient_suppressed``) and ``message`` the human-readable message. ``details`` is the
     error's ``details`` object when the server sent one, and ``retry_after`` the seconds to wait
     before retrying a 429 (``Retry-After`` header, else ``details.retry_after_seconds``).
+    ``docs_url`` is where the fix is documented, for a refused send (e.g.
+    ``https://agentboxd.com/docs/send-refusals#sending_paused``); ``None`` for other errors.
     """
 
     def __init__(
@@ -30,6 +32,7 @@ class AgentboxdError(Exception):
         message: str,
         details: Any = None,
         retry_after: Optional[float] = None,
+        docs_url: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.status = status
@@ -37,6 +40,7 @@ class AgentboxdError(Exception):
         self.message = message
         self.details = details
         self.retry_after = retry_after
+        self.docs_url = docs_url
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(status={self.status!r}, code={self.code!r}, message={self.message!r})"
@@ -54,7 +58,8 @@ class BadRequestError(AgentboxdError):
 
 
 class AuthenticationError(AgentboxdError):
-    """401: missing or invalid API key."""
+    """401: missing, invalid or revoked API key, or (``code == "api_key_expired"``) a key past its
+    ``expires_at``: create a new key in the dashboard."""
 
 
 class PermissionDeniedError(AgentboxdError):
@@ -101,6 +106,7 @@ def error_for_status(
     message: Optional[str],
     details: Any = None,
     retry_after: Optional[float] = None,
+    docs_url: Optional[str] = None,
 ) -> AgentboxdError:
     cls = _BY_STATUS.get(status) or (InternalServerError if status >= 500 else AgentboxdError)
-    return cls(status, code or "http_error", message or f"HTTP {status}", details, retry_after)
+    return cls(status, code or "http_error", message or f"HTTP {status}", details, retry_after, docs_url)

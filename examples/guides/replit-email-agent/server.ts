@@ -1,13 +1,23 @@
 /**
- * Webhook mode: a small HTTP server that Agentboxd calls on every `message.received`. Suits a Replit
- * Autoscale deployment (it scales to zero between emails) or a Reserved VM.
+ * Webhook mode: a small HTTP server that Agentboxd calls when mail arrives (`message.received`), passes its
+ * check (`message.enriched`) or is released (`message.released`). Suits a Replit Autoscale deployment (it
+ * scales to zero between emails) or a Reserved VM.
  *
  *   npx tsx server.ts        Secrets: AGENTBOXD_API_KEY, AGENTBOXD_WEBHOOK_SECRET (from setup.ts)
  */
 import { createServer, type Server } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { Agentboxd, verifyWebhook, type EnvelopeEventData, type MessageEventData, type WebhookEvent } from 'agentboxd';
-import { handleMessage } from './handle.js';
+import { EVENTS, handleMessage } from './handle.js';
+
+const mailEvents: readonly string[] = EVENTS;
+
+/** The message an event is about, or null for other events and for content withheld from this event. */
+export function eventMessageId(event: WebhookEvent<EnvelopeEventData | MessageEventData>): string | null {
+  if (!mailEvents.includes(event.type)) return null;
+  if ('message_id' in event.data) return event.data.message_id; // envelope: handleMessage reads the message
+  return event.data.message.withheld ? null : event.data.message.id; // full payload: a later event brings it
+}
 
 export function webhookServer(mr: Agentboxd, secret: string, log: (line: string) => void = console.log): Server {
   return createServer((req, res) => {
@@ -41,8 +51,7 @@ export function webhookServer(mr: Agentboxd, secret: string, log: (line: string)
       }
       const event = JSON.parse(raw.toString('utf8')) as WebhookEvent<EnvelopeEventData | MessageEventData>;
       // setup.ts subscribes with payload "envelope" (ids and subject, no content); a full payload works too.
-      const id =
-        event.type !== 'message.received' ? null : 'message_id' in event.data ? event.data.message_id : event.data.message.id;
+      const id = eventMessageId(event);
       if (!id) {
         res.writeHead(204).end();
         return;

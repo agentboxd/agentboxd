@@ -15,7 +15,7 @@ This repository holds the open-source clients for the hosted [Agentboxd](https:/
 | TypeScript / Node client | `npm install agentboxd` | [`sdk/`](sdk) |
 | Command line | `npx agentboxd --help` | [`sdk/src/cli/`](sdk/src/cli) |
 | MCP server (Claude Desktop, Claude Code, Cursor, ...) | `npx -y @agentboxd/mcp` | [`mcp/`](mcp) |
-| Python client (sync + async) | Coming soon to PyPI; install from [`sdk-python/`](sdk-python) meanwhile | [`sdk-python/`](sdk-python) |
+| Python client (sync + async) | `pip install agentboxd` | [`sdk-python/`](sdk-python) |
 | Example agents and guide code | | [`examples/`](examples) |
 | Agent skill (Claude Code, Cursor, Codex, OpenClaw, ...) | `npx skills add agentboxd/skills` | [agentboxd/skills](https://github.com/agentboxd/skills) |
 
@@ -93,14 +93,15 @@ confirmation link."* Config snippets for Claude Desktop, Cursor and other client
 
 ## Examples
 
-- [`examples/echo-agent.ts`](examples/echo-agent.ts): registers a webhook and replies to every email
-  with a short summary. Needs a public URL for the webhook (e.g. a tunnel):
+- [`examples/echo-agent.ts`](examples/echo-agent.ts): registers a webhook and replies once to each new
+  email with its word and attachment count, leaving automatic, bulk, spoofed and suspicious mail alone,
+  and mail whose Reply-To is another address. Needs a public URL for the webhook (e.g. a tunnel):
   `AGENTBOXD_API_KEY=mr_... AGENTBOXD_BASE_URL=https://api.agentboxd.com ECHO_WEBHOOK_URL=https://<your-tunnel>/webhook npm run echo-agent`
 - [`examples/deepseek-agent/`](examples/deepseek-agent): a tool-calling agent that signs up for things
   and triages an inbox, with the email-is-untrusted guardrails wired in.
 
 ```bash
-npm install          # dev tooling for the examples (tsx, vitest)
+npm ci               # dev tooling for the examples (tsx, vitest), as locked in package-lock.json
 npm run echo-agent
 npm run deepseek-agent -- --demo signup
 ```

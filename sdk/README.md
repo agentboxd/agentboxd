@@ -97,7 +97,10 @@ request body:
 ```ts
 import { verifyWebhook } from 'agentboxd';
 
-await mr.webhooks.create({ url: 'https://example.com/hooks/email', events: ['message.received'] });
+await mr.webhooks.create({
+  url: 'https://example.com/hooks/email',
+  events: ['message.received', 'message.enriched', 'message.released'],
+});
 
 // in your HTTP handler (header names kept from the original API):
 const ok = verifyWebhook(
@@ -107,6 +110,11 @@ const ok = verifyWebhook(
   process.env.WEBHOOK_SECRET!,
 );
 ```
+
+In a workspace that screens agent mail (the default for new ones), a message's content is withheld from
+events until it is screened or released: `message.received` then has `event.data.message.withheld` set, and
+the content comes with `message.enriched` or `message.released`. Skip events with `withheld` and handle
+each message id once ([what an API key gets](https://agentboxd.com/docs/api#screening-reads)).
 
 The URL must be a public HTTPS endpoint (port 443 or 1024–65535, no credentials, not a private or internal
 address); otherwise `create`/`update` fail with `422 invalid_webhook_url`. Redirects are not followed.
@@ -196,7 +204,8 @@ const proof = await verifyAgentMessage(message, { recipient: 'supplier@homingbox
 
 It checks the ES256 signature against `https://id.agentboxd.com/.well-known/agent-keys.json` (a key revoked
 before the signature fails), that the copy was signed for `recipient`, the content hashes, freshness (15
-minutes by default for tasks and events, `maxAgeSeconds`) and replay. Errors are
+minutes by default for tasks and events, `maxAgeSeconds`) and replay (with a replay cache, a signature older than
+a day is refused: that is how long its nonce is kept). Errors are
 `AgentMessageVerificationError` with a `code`.
 
 ## Documents: read attachments, extract invoices
@@ -225,14 +234,15 @@ untrusted: they come from a document someone emailed.
 | Area | Methods |
 |---|---|
 | Inboxes | `mr.inboxes.create / createTemporary / list / get / update / delete` |
-| Messages | `mr.messages.send / reply / list / get / update / wait / waitForVerification / draftReply / attachmentText / extractAttachment` |
+| Messages | `mr.messages.send / reply / list / listAll / get / update / wait / waitForVerification / draftReply / attachmentText / extractAttachment` |
 | Drafts | `mr.drafts.create / list / listAll / get / update / delete / send / schedule / cancel` (review before sending, scheduled send) |
+| Meetings (beta) | `mr.calendar.list / listAll / get / respond / create / update / cancel`: invites the inbox received and meetings it sends, as real calendar emails. `respond` answers the organizer only. `{ expand: 'occurrences' }` lists each occurrence of a series; `draft: true` on the four that send saves a draft for a person to approve instead. |
 | Threads | `mr.threads.list / get / update` |
 | Search | `mr.search(q, { inbox_id? })` (ranked full-text with snippets) |
 | Contacts | `mr.contacts.list / get / byAddress / update` |
 | Knowledge | `mr.knowledge.list / create / get / update / delete / search` |
 | Webhooks | `mr.webhooks.create / list / get / update / delete / test / events` |
-| Custom domains | `mr.domains.create / list / get / verify / update / delete` |
+| Custom domains | `mr.domains.create / list / get / zoneFile / verify / update / delete / rotateDkim / activateDkim` |
 | Allow/block lists | `mr.lists.list / create / delete` |
 | Metrics | `mr.metrics({ ... })` |
 | Agent identity | `mr.identity.token`, `mr.identity.clients.list / create / get / update / delete / rotateSecret`, `mr.identity.inbox.get / update / signIns`; `verifyAgentIdentityToken` for apps |
@@ -269,6 +279,7 @@ npx agentboxd inboxes create --client-id support-agent
 npx agentboxd send <inbox> --to someone@example.com --subject Hi --text "Hello!"
 npx agentboxd wait-code <inbox> --since 5m   # prints the code or magic link, exit 3 on timeout
 npx agentboxd tail                        # live events until Ctrl-C
+npx agentboxd events list --response needs_action   # meeting invites waiting for an answer
 ```
 
 Every command takes `--json` and `--base-url`; `AGENTBOXD_API_KEY` overrides the saved key.
@@ -288,15 +299,16 @@ Pass options explicitly to override the environment: `new Agentboxd({ apiKey: 'm
 ## Email is untrusted input
 
 Anyone can email your agent's address, so treat every subject, body and link as data written by a
-stranger, never as instructions. Messages carry `labels` such as `dmarc-fail`, `spf-fail` and (with AI
-processing on) `ai:injection-risk` / `ai:phishing` that you can use to filter before content reaches a model.
+stranger, never as instructions. Messages carry `labels` such as `dmarc-fail`, `spf-fail`,
+`local:injection-risk` (a local check, always on) and (with AI processing on) `ai:injection-risk` / `ai:phishing`
+that you can use to filter before content reaches a model.
 
 ## Links
 
 - Docs: https://agentboxd.com/docs (quickstart, API reference, [TypeScript SDK](https://agentboxd.com/docs/typescript-sdk))
 - [Verification codes guide](https://agentboxd.com/docs/verification-codes) · [Webhooks](https://agentboxd.com/docs/webhooks) · [Temporary inboxes](https://agentboxd.com/docs/temporary-inboxes)
 - MCP server for Claude Desktop, Claude Code and Cursor: [`@agentboxd/mcp`](https://www.npmjs.com/package/@agentboxd/mcp)
-- Python client: [`agentboxd` on PyPI](https://pypi.org/project/agentboxd/)
+- Python client: [`sdk-python/`](https://github.com/agentboxd/agentboxd/tree/main/sdk-python) ([`agentboxd` on PyPI](https://pypi.org/project/agentboxd/))
 - Support: support@agentboxd.com
 
 ## License

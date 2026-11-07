@@ -44,6 +44,11 @@ def test_dkim_rotation(client: Agentboxd, rec: Recorder) -> None:
     assert (rec.last.method, rec.last.url.path) == ("POST", "/v1/domains/d_1/dkim/activate")
 
 
+def test_domain_zone_file(client: Agentboxd, rec: Recorder) -> None:
+    client.domains.zone_file("d_1")
+    assert (rec.last.method, rec.last.url.path) == ("GET", "/v1/domains/d_1/zone-file")
+
+
 def test_deliverability(client: Agentboxd, rec: Recorder) -> None:
     client.deliverability()
     assert (rec.last.method, rec.last.url.path) == ("GET", "/v1/deliverability")

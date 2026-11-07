@@ -4,7 +4,7 @@ Guide: https://agentboxd.com/guides/n8n-email-automation
 
 | File | What |
 |---|---|
-| `inbound-reply.workflow.json` | Webhook trigger (raw body) → Code node that verifies the `X-Mailroom-Signature` HMAC and skips spoofed or automatic mail → HTTP Request that replies in the thread. |
+| `inbound-reply.workflow.json` | Webhook trigger (raw body) → Code node that verifies the `X-Mailroom-Signature` HMAC, skips withheld content, messages it already handled, and spoofed or automatic mail → HTTP Request that replies in the thread. |
 | `send-and-wait.workflow.json` | Manual trigger → get-or-create an inbox (`client_id`) → send an email → long-poll `/messages/wait` for the answer. |
 | `verify-and-filter.js` | The Code node's source, readable on its own. |
 | `workflows.ts` | Builds both workflow files from that source (`--check` verifies them). |
@@ -22,8 +22,13 @@ Guide: https://agentboxd.com/guides/n8n-email-automation
 ```bash
 curl -s https://api.agentboxd.com/v1/webhooks \
   -H "Authorization: Bearer $AGENTBOXD_API_KEY" -H "Content-Type: application/json" \
-  -d '{"url":"https://n8n.example.com/webhook/agentboxd-inbound","events":["message.received"]}'
+  -d '{"url":"https://n8n.example.com/webhook/agentboxd-inbound","events":["message.received","message.enriched","message.released"]}'
 ```
+
+   All three: in a workspace that screens agent mail, a message's content arrives with `message.enriched`
+   or `message.released` instead of `message.received`. The Code node skips events whose content is
+   withheld and answers each message once
+   ([what an API key gets](https://agentboxd.com/docs/api#screening-reads)).
 
 5. Paste the `secret` from that response into `SECRET` in the Code node.
 

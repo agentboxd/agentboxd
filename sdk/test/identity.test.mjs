@@ -166,3 +166,18 @@ test('mr.identities and identity.token({ identityId }) call the documented route
   assert.deepEqual(calls[0].body, { display_name: 'Researcher', client_id: 'r1' });
   assert.deepEqual(calls[7].body, { audience: AUD });
 });
+
+test('a replay cache keeps the jti until exp plus the clock tolerance, as long as the token verifies', async () => {
+  const seen = [];
+  const spy = { use: (jti, expiresAt) => (seen.push(expiresAt), true) };
+  const iat = now();
+  await verify(await sign({}, {}, { iat, exp: iat + 300 }), { replayCache: spy });
+  await verify(await sign({}, {}, { iat, exp: iat + 300 }), { replayCache: spy, clockTolerance: 5 });
+  assert.deepEqual(seen, [iat + 330, iat + 305]);
+
+  // Expired 10 s ago but inside the tolerance: still accepted, so a replay must still be caught.
+  const replayCache = new MemoryReplayCache();
+  const late = await sign({}, {}, { iat: now() - 310, exp: now() - 10 });
+  await verify(late, { replayCache });
+  await rejects(verify(late, { replayCache }), 'token_replayed');
+});

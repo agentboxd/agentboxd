@@ -64,13 +64,15 @@ interface StreamEvents {
   open: void;
   /** After each (re)subscribe: `replayed` events were resent; `truncated` means some may be missing (resync via the REST API). */
   subscribed: { replayed: number; truncated: boolean };
-  /** A refused subscription or token request (the stream ends), or a failed reconnect attempt (it retries). */
+  /** A refused subscription or token request (the stream ends), or a failed reconnect attempt or server error (it retries). */
   error: Error;
   /** A connection closed; `willReconnect` tells whether another one follows. */
   close: { code: number; reason: string; willReconnect: boolean };
 }
 
 const FATAL = new Set([4001, 4003, 1009]);
+/** `error` frame codes that refuse our own subscription or frame: the stream ends. Any other code reconnects. */
+const REFUSALS = new Set(['invalid_json', 'invalid_message', 'invalid_subscription', 'inbox_not_found', 'rate_limited']);
 const MAX_BACKOFF_MS = 30_000;
 
 async function resolveWebSocket(given?: WebSocketConstructor): Promise<WebSocketConstructor> {
@@ -238,9 +240,17 @@ export class EventStream implements AsyncIterable<StreamEvent> {
         return;
       }
       case 'error': {
-        // Every error the server sends is about our own subscription (unknown inbox or event type):
-        // reconnecting would repeat it, so the stream ends.
-        const err = new StreamClosedError(1008, `${String(msg.code)}: ${String(msg.message)}`);
+        const detail = `${String(msg.code)}: ${String(msg.message)}`;
+        if (!REFUSALS.has(String(msg.code))) {
+          // Any other error (a fault on the server's side) says nothing about our subscription: reconnect with
+          // backoff and resume with since, like after a drop.
+          this.emit('error', new Error(`stream error, reconnecting: ${detail}`));
+          ws.close(4000, 'server error');
+          return;
+        }
+        // A refused subscription (unknown inbox or event type, bad frame): reconnecting would repeat it, so the
+        // stream ends.
+        const err = new StreamClosedError(1008, detail);
         this.emit('error', err);
         this.closedByUser = true;
         ws.close(1000, 'subscription refused');

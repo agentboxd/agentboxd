@@ -3,6 +3,7 @@ vectors in test/fixtures/agent-messages/author-vectors.json), handles, the publi
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ import pytest
 from agentboxd import Agentboxd, Message
 from agentboxd.identity import (
     AUTHOR_JWS_TYP,
+    AgentMessageVerificationError,
     AuthorSignatureVerificationError,
     create_key_proof,
     generate_agent_key,
@@ -127,6 +129,41 @@ def test_generate_proof_sign_verify(alg: Any) -> None:
     assert err.value.code == "no_signature"
 
 
+def test_to_and_cc_are_signed_together() -> None:
+    # Given either, both are signed (the other as none), and a cc added to a signed to is refused.
+    import jwt
+
+    key = generate_agent_key("EdDSA")
+    sig = sign_agent_message(key, from_="bot@acme.example", text="Hi", to=["B <b@x.example>", "a@x.example"])
+    claims = json.loads(
+        jwt.api_jws.decode(sig, key=jwt.PyJWK(key["public_jwk"], algorithm="EdDSA").key, algorithms=["EdDSA"])
+    )
+    assert claims["to"] == ["a@x.example", "b@x.example"] and claims["cc"] == []
+    only_cc = sign_agent_message(key, from_="bot@acme.example", text="Hi", cc="c@x.example")
+    claims = json.loads(
+        jwt.api_jws.decode(
+            only_cc, key=jwt.PyJWK(key["public_jwk"], algorithm="EdDSA").key, algorithms=["EdDSA"]
+        )
+    )
+    assert claims["to"] == [] and claims["cc"] == ["c@x.example"]
+    message: dict[str, Any] = {
+        "from": "bot@acme.example",
+        "to": ["a@x.example", "b@x.example"],
+        "cc": ["eve@evil.example"],
+        "subject": None,
+        "text": "Hi",
+        "html": None,
+        "in_reply_to": None,
+        "attachments": [],
+        "author": {"signature": sig},
+    }
+    keys = [{**key["public_jwk"], "kid": key["kid"], "alg": "EdDSA", "status": "active"}]
+    with pytest.raises(AuthorSignatureVerificationError) as err:
+        verify_author_signature(message, keys=keys)
+    assert err.value.code == "content_mismatch" and "cc" in str(err.value)
+    assert verify_author_signature({**message, "cc": []}, keys=keys)["covered"]["recipients"]
+
+
 def test_delivery_signature_binds_the_author_signature() -> None:
     # verify_agent_message flags an author signature that isn't the one agent_sig names (content_mismatch).
     vectors = json.loads(
@@ -171,6 +208,19 @@ def test_delivery_signature_binds_the_author_signature() -> None:
     with pytest.raises(Exception) as err:
         verify_agent_message({**signed, "author": {"signature": "other.author.jws"}}, **kwargs)
     assert getattr(err.value, "code", None) == "content_mismatch"
+
+    # Removed by a relay or an export: refused as well, not passed as a copy without an author signature.
+    removed: list[dict[str, Any]] = [
+        {**signed, "author": None},
+        {key: value for key, value in signed.items() if key != "author"},
+        {**signed, "author": {"signature": None}},
+        {**signed, "author": {"signature": " "}},
+    ]
+    for copy in removed:
+        with pytest.raises(AgentMessageVerificationError) as removed_err:
+            verify_agent_message(copy, **kwargs)
+        assert removed_err.value.code == "content_mismatch"
+        assert str(removed_err.value).endswith(": author")
 
 
 # ---------- client ----------
@@ -314,3 +364,93 @@ def test_async_phase2(rec: Recorder) -> None:
         "/v1/inboxes/i1/messages/send",
     ]
     assert json.loads(rec.last.content)["agent_signature"] == "a.b.c"
+
+
+# ---------- key lifecycle and time: the signer picks iat, Agentboxd sets created_at ----------
+
+
+def _iso(seconds: float) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _author_code(message: dict[str, Any], keys: Any, **kwargs: Any) -> str:
+    try:
+        verify_author_signature(message, keys=keys, **kwargs)
+    except AuthorSignatureVerificationError as err:
+        return err.code
+    return "valid"
+
+
+_LIFECYCLE_KEY = generate_agent_key()
+
+
+def _signed(iat: int, **over: Any) -> dict[str, Any]:
+    sig = sign_agent_message(_LIFECYCLE_KEY, from_="bot@acme.example", text="hi", iat=iat)
+    message: dict[str, Any] = {
+        "from": "bot@acme.example",
+        "to": [],
+        "cc": [],
+        "subject": None,
+        "text": "hi",
+        "html": None,
+        "in_reply_to": None,
+        "attachments": [],
+        "author": {"signature": sig},
+    }
+    message.update(over)
+    return message
+
+
+def _keys(**over: Any) -> list[dict[str, Any]]:
+    key = {
+        **_LIFECYCLE_KEY["public_jwk"],
+        "kid": _LIFECYCLE_KEY["kid"],
+        "alg": _LIFECYCLE_KEY["alg"],
+        "status": "active",
+        "retired_at": None,
+        "revoked_at": None,
+    }
+    key.update(over)
+    return [key]
+
+
+def test_a_backdated_iat_does_not_get_a_stolen_key_past_its_revocation() -> None:
+    t = int(time.time()) - 3600  # the revocation, an hour ago
+    revoked = _keys(status="revoked", revoked_at=_iso(t))
+    # No created_at: nothing but the signer's own iat dates it, so a revoked key fails (report #295, A4).
+    assert _author_code(_signed(t - 100), revoked) == "key_revoked"
+    assert _author_code(_signed(t - 100, created_at=_iso(t - 50)), revoked) == "valid"
+    # Signed after the revocation with an earlier iat: the message's created_at gives it away.
+    assert _author_code(_signed(t - 100, created_at=_iso(t + 10)), revoked) == "key_revoked"
+    assert _author_code(_signed(t, created_at=_iso(t - 30)), revoked) == "key_revoked"
+    # Revoked without a (readable) time: revoked from the start.
+    for revoked_at in (None, "not a time"):
+        assert _author_code(_signed(t - 100), _keys(status="revoked", revoked_at=revoked_at)) == "key_revoked"
+    no_time = [{k: v for k, v in _keys(status="revoked")[0].items() if k != "revoked_at"}]
+    assert _author_code(_signed(t - 100), no_time) == "key_revoked"
+
+
+def test_a_retired_key_verifies_what_it_signed_before_retired_at_nothing_newer() -> None:
+    t = int(time.time()) - 3600
+    retired = _keys(status="retired", retired_at=_iso(t))
+    assert _author_code(_signed(t - 100, created_at=_iso(t - 99)), retired) == "valid"
+    assert _author_code(_signed(t + 5), retired) == "key_retired"
+    assert _author_code(_signed(t + 5, created_at=_iso(t + 6)), retired) == "key_retired"
+    # Rotation isn't a compromise: a message signed before it and delivered just after still verifies.
+    assert _author_code(_signed(t - 100, created_at=_iso(t + 10)), retired) == "valid"
+    # Without retired_at there is no cut-off: old signatures stay valid.
+    assert _author_code(_signed(t + 5), _keys(status="retired")) == "valid"
+
+
+def test_an_iat_in_the_future_or_after_the_message_was_created_is_refused() -> None:
+    now = int(time.time())
+    active = _keys()
+    assert _author_code(_signed(now + 120), active) == "issued_in_future"
+    assert _author_code(_signed(now + 10), active) == "valid"  # inside the 30 s tolerance
+    assert _author_code(_signed(now + 10), active, clock_tolerance=0) == "issued_in_future"
+    assert _author_code(_signed(now + 10), active, clock_tolerance=0, now=now + 20) == "valid"
+    # Agentboxd accepts an iat at most 60 s ahead of its clock; created_at is that clock.
+    assert _author_code(_signed(now - 1000, created_at=_iso(now - 1080)), active) == "valid"
+    assert _author_code(_signed(now - 1000, created_at=_iso(now - 1200)), active) == "issued_in_future"

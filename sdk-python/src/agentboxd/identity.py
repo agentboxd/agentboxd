@@ -28,26 +28,38 @@ from typing import Any, Literal, Optional, Protocol, TypedDict, Union, cast
 import httpx
 
 __all__ = [
+    "AGENT_CLAIM",
     "AGENT_MESSAGE_TYP",
     "AUTHOR_JWS_TYP",
     "DEFAULT_AGENT_MESSAGE_MAX_AGE_SECONDS",
     "DEFAULT_IDENTITY_ISSUER",
     "KEY_PROOF_AUD",
     "KEY_PROOF_TYP",
+    "MAILBOX_CLAIM",
+    "MAX_IDENTITY_TOKEN_SECONDS",
+    "RUNBOXD_CLAIM",
+    "WORKSPACE_CLAIM",
+    "AgentIdentityError",
+    "AgentIdentityErrorCode",
     "AgentKeyPair",
     "AgentMessageVerificationError",
+    "AgentWorkspace",
     "AuthorSignatureCoverage",
     "AuthorSignatureVerificationError",
     "MemoryReplayCache",
     "ReplayCache",
     "RevocationCheck",
+    "RunboxdAllowance",
+    "VerifiedAgentIdentity",
     "VerifiedAgentMessage",
     "VerifiedAuthorSignature",
+    "averify_agent_identity_token",
     "averify_agent_message",
     "create_key_proof",
     "generate_agent_key",
     "jwk_thumbprint",
     "sign_agent_message",
+    "verify_agent_identity_token",
     "verify_agent_message",
     "verify_author_signature",
 ]
@@ -57,7 +69,12 @@ AGENT_MESSAGE_TYP = "agentboxd-msg+jwt"
 DEFAULT_AGENT_MESSAGE_MAX_AGE_SECONDS = 900
 """Default freshness window for ``task`` and ``event`` messages; plain messages have none by default."""
 _REPLAY_WITHOUT_MAX_AGE_SECONDS = 86_400
+"""With a replay cache and no freshness window, nonces are kept this long, and older signatures are refused
+(``too_old``): once its nonce is forgotten, the same signature would verify again."""
 _KEY_CACHE_SECONDS = 300.0
+_KEY_REFETCH_COOLDOWN_SECONDS = 60.0
+"""An unknown ``kid`` fetches the key set again at most once per URI in this window; inside it the cached set
+answers, so a sender can't make every verification hit the network."""
 
 AgentMessageErrorCode = Literal[
     "dependencies_missing",
@@ -101,7 +118,8 @@ class ReplayCache(Protocol):
     """Remembers accepted nonces until they expire: ``use`` returns True the first time, False for a replay.
 
     Implement it on Redis or your database when you run more than one process
-    (e.g. ``SET nonce 1 NX EXAT expires_at``)."""
+    (e.g. ``SET nonce 1 NX EXAT expires_at``). ``expires_at`` already includes the clock tolerance: keep the
+    entry until then."""
 
     def use(self, nonce: str, expires_at: float) -> bool: ...
 
@@ -153,6 +171,7 @@ _DEFAULT = _Default()
 MaxAge = Union[float, None, _Default]
 
 _key_cache: dict[str, tuple[float, Mapping[str, Any]]] = {}
+_key_fetched_at: dict[str, float] = {}  # last fetch attempt per URI, successful or not
 
 
 def _deps() -> tuple[Any, Any]:
@@ -165,6 +184,21 @@ def _deps() -> tuple[Any, Any]:
             f"verify_agent_message needs the identity extra: pip install 'agentboxd[identity]' ({err})",
         ) from err
     return jwt, rfc8785
+
+
+def _epoch(value: Any) -> Optional[float]:
+    """Seconds since the epoch of an ISO time from a key set or a message; None when absent or unreadable."""
+    if not isinstance(value, str) or not value:
+        return None
+    from datetime import datetime, timezone
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 def _bare(address: str) -> str:
@@ -221,29 +255,50 @@ def _content_mismatches(message: Mapping[str, Any], claims: Mapping[str, Any], r
     return bad
 
 
-def _fetch_keys(uri: str, fresh: bool) -> Mapping[str, Any]:
+def _cached_keys(uri: str, fresh: bool) -> Optional[Mapping[str, Any]]:
+    """The cached key set unless it is stale, or ``fresh`` asks again after the refetch cooldown."""
     hit = _key_cache.get(uri)
-    if hit and not fresh and time.time() - hit[0] < _KEY_CACHE_SECONDS:
-        return hit[1]
-    res = httpx.get(uri, headers={"Accept": "application/json"}, timeout=10)
+    now = time.time()
+    if not hit or now - hit[0] >= _KEY_CACHE_SECONDS:
+        return None
+    if fresh and now - _key_fetched_at.get(uri, 0.0) >= _KEY_REFETCH_COOLDOWN_SECONDS:
+        return None
+    return hit[1]
+
+
+def _key_set(uri: str, res: httpx.Response) -> Mapping[str, Any]:
+    """The fetched key set, cached. A body that isn't one (an HTML error page served with 200, a changed
+    format) raises ``unknown_key`` and isn't cached, so the next verification fetches again."""
     if res.status_code != 200:
         raise AgentMessageVerificationError("unknown_key", f"could not fetch {uri}: HTTP {res.status_code}")
-    keys = cast(Mapping[str, Any], res.json())
+    try:
+        body = res.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, Mapping) or not isinstance(body.get("keys"), list):
+        raise AgentMessageVerificationError("unknown_key", f"malformed key set at {uri}")
+    keys = cast(Mapping[str, Any], body)
     _key_cache[uri] = (time.time(), keys)
     return keys
+
+
+def _fetch_keys(uri: str, fresh: bool) -> Mapping[str, Any]:
+    cached = _cached_keys(uri, fresh)
+    if cached is not None:
+        return cached
+    _key_fetched_at[uri] = time.time()
+    res = httpx.get(uri, headers={"Accept": "application/json"}, timeout=10)
+    return _key_set(uri, res)
 
 
 async def _afetch_keys(uri: str, fresh: bool) -> Mapping[str, Any]:
-    hit = _key_cache.get(uri)
-    if hit and not fresh and time.time() - hit[0] < _KEY_CACHE_SECONDS:
-        return hit[1]
+    cached = _cached_keys(uri, fresh)
+    if cached is not None:
+        return cached
+    _key_fetched_at[uri] = time.time()
     async with httpx.AsyncClient(timeout=10) as http:
         res = await http.get(uri, headers={"Accept": "application/json"})
-    if res.status_code != 200:
-        raise AgentMessageVerificationError("unknown_key", f"could not fetch {uri}: HTTP {res.status_code}")
-    keys = cast(Mapping[str, Any], res.json())
-    _key_cache[uri] = (time.time(), keys)
-    return keys
+    return _key_set(uri, res)
 
 
 def _find_key(keys: Mapping[str, Any], kid: str) -> Optional[Mapping[str, Any]]:
@@ -292,10 +347,12 @@ def _check(
     recipient: str,
     issuer: str,
     max_age_seconds: MaxAge,
-    replay_cache: Optional[ReplayCache],
+    replay: bool,
     clock_tolerance: float,
     now: Optional[float],
-) -> VerifiedAgentMessage:
+) -> tuple[VerifiedAgentMessage, float]:
+    """Every check but the directory's and the nonce's. Returns the result and how long its nonce must be kept
+    (``iat`` + the window + the clock tolerance) when ``replay``."""
     kid = str(header["kid"])
     if key is None:
         raise AgentMessageVerificationError("unknown_key", f"no agent signing key {kid} at {where}")
@@ -313,14 +370,14 @@ def _check(
         or not isinstance(claims.get("aud"), str)
     ):
         raise AgentMessageVerificationError("invalid_signature", "missing iat, nonce or aud")
-    revoked_at = key.get("revoked_at")
-    if key.get("status") == "revoked" and isinstance(revoked_at, str):
-        from datetime import datetime
-
-        revoked = datetime.fromisoformat(revoked_at.replace("Z", "+00:00")).timestamp()
+    if key.get("status") == "revoked":
+        # A revoked key without a (readable) revocation time counts as revoked from the start.
+        revoked = _epoch(key.get("revoked_at"))
+        if revoked is None:
+            raise AgentMessageVerificationError("key_revoked", f"key {kid} is revoked (no revocation time)")
         if revoked <= iat:
             raise AgentMessageVerificationError(
-                "key_revoked", f"key {kid} was revoked at {revoked_at}, before this signature"
+                "key_revoked", f"key {kid} was revoked at {key.get('revoked_at')}, before this signature"
             )
     if claims.get("iss") != issuer:
         raise AgentMessageVerificationError(
@@ -334,13 +391,10 @@ def _check(
     agent_sig = claims.get("agent_sig")
     author = message.get("author")
     author_sig = author.get("signature") if isinstance(author, Mapping) else None
-    # aSIM phase 2: the delivery signature binds the sender's own author signature.
-    if (
-        isinstance(agent_sig, Mapping)
-        and isinstance(author_sig, str)
-        and author_sig
-        and agent_sig.get("jws_sha256") != _sha(re.sub(r"\s+", "", author_sig))
-    ):
+    author_jws = re.sub(r"\s+", "", author_sig) if isinstance(author_sig, str) else ""
+    # aSIM phase 2: the delivery signature names the author signature it was made with. That one must be
+    # there, unchanged: a copy without it (removed by a relay or an export) is refused like a different one.
+    if isinstance(agent_sig, Mapping) and (not author_jws or agent_sig.get("jws_sha256") != _sha(author_jws)):
         bad.append("author")
     if bad:
         raise AgentMessageVerificationError(
@@ -350,22 +404,21 @@ def _check(
     if iat > current + clock_tolerance:
         raise AgentMessageVerificationError("issued_in_future", "signature iat is in the future")
     if isinstance(max_age_seconds, _Default):
-        max_age: Optional[float] = (
+        freshness: Optional[float] = (
             None if claims.get("type") == "message" else DEFAULT_AGENT_MESSAGE_MAX_AGE_SECONDS
         )
     else:
-        max_age = max_age_seconds
+        freshness = max_age_seconds
+    # Replay protection lasts only as long as the nonce is remembered: with a replay cache, a signature older
+    # than that is refused, or it would verify again once its nonce is forgotten.
+    max_age = freshness if freshness is not None else (_REPLAY_WITHOUT_MAX_AGE_SECONDS if replay else None)
     if max_age is not None and current - iat > max_age + clock_tolerance:
+        why = " (a replay_cache remembers nonces for a day)" if freshness is None else ""
         raise AgentMessageVerificationError(
-            "too_old", f"signed {round(current - iat)} s ago; the limit is {max_age} s"
+            "too_old", f"signed {round(current - iat)} s ago; the limit is {max_age} s{why}"
         )
-    if replay_cache is not None and not replay_cache.use(
-        str(claims["nonce"]), iat + (max_age if max_age is not None else _REPLAY_WITHOUT_MAX_AGE_SECONDS)
-    ):
-        raise AgentMessageVerificationError(
-            "replayed", "this signature was already accepted (nonce seen before)"
-        )
-    return {
+    keep_until = iat + (max_age if max_age is not None else _REPLAY_WITHOUT_MAX_AGE_SECONDS) + clock_tolerance
+    result: VerifiedAgentMessage = {
         "from": str(claims.get("from")),
         "recipient": str(claims["aud"]),
         "assurance": str(claims.get("assurance")),
@@ -377,6 +430,16 @@ def _check(
         "iat": iat,
         "claims": claims,
     }
+    return result, keep_until
+
+
+def _use_nonce(replay_cache: Optional[ReplayCache], result: VerifiedAgentMessage, keep_until: float) -> None:
+    """Records the nonce. Called last, once every other check passed: burned before a check that failed (the
+    directory couldn't be reached), it would turn every retry into ``replayed``."""
+    if replay_cache is not None and not replay_cache.use(result["nonce"], keep_until):
+        raise AgentMessageVerificationError(
+            "replayed", "this signature was already accepted (nonce seen before)"
+        )
 
 
 def _revocation_request(
@@ -467,12 +530,16 @@ def verify_agent_message(
     """Verify an agent message's delivery signature. Raises :class:`AgentMessageVerificationError`.
 
     Checks: ES256 against ``{issuer}/.well-known/agent-keys.json`` (or ``keys``; a key revoked at or before
-    ``iat`` fails), ``typ``, ``iss``, ``aud`` equals ``recipient`` (your address), the content hashes against
-    ``message`` (an API message dict), freshness (``max_age_seconds``: 900 by default for ``task``/``event``,
-    none for ``message``; ``None`` turns it off) and replay (``replay_cache``, keyed by ``nonce``). With
-    ``check_revocation`` the directory also confirms the sender is still active (codes ``agent_revoked``,
-    ``agent_suspended``, ``agent_deleted``, ``revocation_check_failed``). ``now`` (epoch seconds) is for
-    tests.
+    ``iat``, or revoked without a time, fails; an answer that isn't a key set fails with ``unknown_key`` and
+    isn't cached), ``typ``, ``iss``, ``aud`` equals ``recipient`` (your address), the content hashes against
+    ``message`` (an API message dict; when the signature names an author signature with ``agent_sig``,
+    ``message["author"]["signature"]`` must be that one), freshness (``max_age_seconds``: 900 by default for
+    ``task``/``event``, none for ``message``; ``None`` turns it off). With ``check_revocation`` the directory
+    also confirms the sender is still active (codes ``agent_revoked``, ``agent_suspended``, ``agent_deleted``,
+    ``revocation_check_failed``). Last, replay (``replay_cache``, keyed by ``nonce``, kept until ``iat`` + the
+    window + ``clock_tolerance``): the nonce is recorded only after everything else passed, so a failed
+    directory check can be retried. With a ``replay_cache`` and no window, signatures older than a day fail
+    with ``too_old``: a nonce is remembered for a day. ``now`` (epoch seconds) is for tests.
     """
     jwt, rfc8785 = _deps()
     issuer = issuer.rstrip("/")
@@ -483,7 +550,7 @@ def verify_agent_message(
     key = _find_key(key_set, str(header["kid"]))
     if key is None and keys is None:
         key = _find_key(_fetch_keys(uri, True), str(header["kid"]))  # rotated since the last fetch
-    result = _check(
+    result, keep_until = _check(
         jwt,
         rfc8785,
         message,
@@ -494,12 +561,13 @@ def verify_agent_message(
         recipient=recipient,
         issuer=issuer,
         max_age_seconds=max_age_seconds,
-        replay_cache=replay_cache,
+        replay=replay_cache is not None,
         clock_tolerance=clock_tolerance,
         now=now,
     )
     if check_revocation is not None:
         _check_standing(check_revocation, sig)
+    _use_nonce(replay_cache, result, keep_until)
     return result
 
 
@@ -527,7 +595,7 @@ async def averify_agent_message(
     key = _find_key(key_set, str(header["kid"]))
     if key is None and keys is None:
         key = _find_key(await _afetch_keys(uri, True), str(header["kid"]))
-    result = _check(
+    result, keep_until = _check(
         jwt,
         rfc8785,
         message,
@@ -538,12 +606,13 @@ async def averify_agent_message(
         recipient=recipient,
         issuer=issuer,
         max_age_seconds=max_age_seconds,
-        replay_cache=replay_cache,
+        replay=replay_cache is not None,
         clock_tolerance=clock_tolerance,
         now=now,
     )
     if check_revocation is not None:
         await _acheck_standing(check_revocation, sig)
+    _use_nonce(replay_cache, result, keep_until)
     return result
 
 
@@ -557,6 +626,8 @@ AUTHOR_JWS_TYP = "agentboxd-author+jwt"
 KEY_PROOF_TYP = "agentboxd-key-proof+jwt"
 KEY_PROOF_AUD = "agentboxd:agent-key"
 AgentKeyAlg = Literal["EdDSA", "ES256"]
+_AUTHOR_FUTURE_SKEW_SECONDS = 60
+"""Agentboxd accepts an author signature whose ``iat`` is at most this far ahead of its own clock."""
 
 AuthorErrorCode = Literal[
     "dependencies_missing",
@@ -564,7 +635,9 @@ AuthorErrorCode = Literal[
     "malformed",
     "wrong_type",
     "unknown_key",
+    "key_retired",
     "key_revoked",
+    "issued_in_future",
     "bad_signature",
     "wrong_sender",
     "content_mismatch",
@@ -737,8 +810,8 @@ def sign_agent_message(
 
     Pass the same ``text``, ``html``, ``data``, ``attachments`` and ``type`` you send (each is covered iff
     given). ``subject``, ``to``/``cc`` (the final header recipients) and ``in_reply_to`` are optional claims;
-    give them on a send (a reply's subject and recipients are computed by Agentboxd). Valid for 5 minutes,
-    once.
+    give them on a send (a reply's subject and recipients are computed by Agentboxd). Given either of ``to``
+    and ``cc``, both are signed, the one left out as none. Valid for 5 minutes, once.
     ``key``: an :class:`AgentKeyPair` whose public key is registered on the sending inbox."""
     _, rfc8785 = _author_deps()
     claims: dict[str, Any] = {
@@ -758,11 +831,12 @@ def sign_agent_message(
     if subject is not None:
         claims["subject_sha256"] = _sha(subject)
     to_list = _recipient_list(to)
-    if to_list is not None:
-        claims["to"] = to_list
     cc_list = _recipient_list(cc)
-    if cc_list is not None:
-        claims["cc"] = cc_list
+    if to_list is not None or cc_list is not None:
+        # One statement of who the message goes to: given either, both are signed ([] for the one left
+        # out), as every verifier reads them.
+        claims["to"] = to_list or []
+        claims["cc"] = cc_list or []
     if in_reply_to:
         claims["in_reply_to"] = in_reply_to
     return _sign(key, AUTHOR_JWS_TYP, claims)
@@ -778,14 +852,24 @@ def verify_author_signature(
     *,
     keys: Union[Mapping[str, Any], Sequence[Mapping[str, Any]]],
     signature: Optional[str] = None,
+    clock_tolerance: float = 30,
+    now: Optional[float] = None,
 ) -> VerifiedAuthorSignature:
     """Verify a message's author signature with the agent's own public keys. Raises
     :class:`AuthorSignatureVerificationError`.
 
     ``keys``: the agent's keys, e.g. ``card["keys"]["agent"]`` from ``directory.resolve`` or
-    ``public_directory.keys(address)`` (a key revoked at or before ``iat`` fails). Checks the signature, that
-    it is from the message's sender, and every claimed hash against ``message`` (an API message dict). The
-    result says what was ``covered``: the automatic text of a data-only message, for instance, is not."""
+    ``public_directory.keys(address)``. Checks the key, the signature, that it is from the message's sender,
+    and every claimed hash against ``message`` (an API message dict). The result says what was ``covered``:
+    the automatic text of a data-only message, for instance, is not.
+
+    The signer picks ``iat``, so a stolen key could backdate it. A revoked key (compromised) fails when
+    ``iat`` or the message's ``created_at`` (Agentboxd's time) is at or after ``revoked_at``, when the
+    message has no ``created_at``, or when the key has no ``revoked_at``. A retired key (rotated) fails with
+    ``key_retired`` when ``iat`` is at or after ``retired_at``: old signatures stay valid, also on a copy
+    delivered after the rotation. An ``iat`` in the future (beyond ``clock_tolerance`` seconds), or more than
+    60 s after ``created_at``, fails with ``issued_in_future``. Once ``to`` or ``cc`` is signed, both are
+    checked, and the one left out means none. ``now`` (epoch seconds) is for tests."""
     jwt, rfc8785 = _author_deps()
     author = message.get("author")
     raw = (
@@ -815,15 +899,46 @@ def verify_author_signature(
     except Exception as err:
         raise AuthorSignatureVerificationError("bad_signature", f"signature does not verify: {err}") from err
     iat = claims.get("iat")
-    if claims.get("v") != 1 or not isinstance(iat, int):
+    if claims.get("v") != 1 or not isinstance(iat, int) or isinstance(iat, bool):
         raise AuthorSignatureVerificationError("malformed", "missing v or iat")
-    revoked_at = key.get("revoked_at")
-    if key.get("status") == "revoked" and isinstance(revoked_at, str):
-        from datetime import datetime
-
-        if datetime.fromisoformat(revoked_at.replace("Z", "+00:00")).timestamp() <= iat:
+    current = time.time() if now is None else now
+    if iat > current + clock_tolerance:
+        raise AuthorSignatureVerificationError("issued_in_future", "signature iat is in the future")
+    # created_at is Agentboxd's clock, which the signer doesn't control. The server accepts an iat at most
+    # 60 s ahead of it, and the signature existed before the message did.
+    created_at = _epoch(message.get("created_at"))
+    if created_at is not None and iat > created_at + _AUTHOR_FUTURE_SKEW_SECONDS + clock_tolerance:
+        raise AuthorSignatureVerificationError(
+            "issued_in_future", "signature iat is after the message was created"
+        )
+    if key.get("status") == "revoked":
+        # Compromised. A revoked key without a (readable) revocation time counts as revoked from the start.
+        # The signer picks iat and a stolen key can backdate it, so only the message's creation (Agentboxd's
+        # clock) dates a signature before the revocation: without created_at a revoked key's signature fails,
+        # and with it the later of iat and created_at must be before revoked_at (a later copy fails too).
+        revoked = _epoch(key.get("revoked_at"))
+        if revoked is None:
             raise AuthorSignatureVerificationError(
-                "key_revoked", f"key {kid} was revoked at {revoked_at}, before this signature"
+                "key_revoked", f"key {kid} is revoked (no revocation time)"
+            )
+        if created_at is None:
+            raise AuthorSignatureVerificationError(
+                "key_revoked",
+                f"key {kid} is revoked, and the message has no created_at to date the signature by",
+            )
+        if revoked <= max(float(iat), created_at):
+            raise AuthorSignatureVerificationError(
+                "key_revoked",
+                f"key {kid} was revoked at {key.get('revoked_at')}, before this signature or message",
+            )
+    if key.get("status") == "retired":
+        # Rotated, not compromised: signatures made before retired_at stay valid, newer ones don't (Agentboxd
+        # refuses them at send). Only iat counts here: a message sent before the rotation may be delivered
+        # after it.
+        retired = _epoch(key.get("retired_at"))
+        if retired is not None and retired <= iat:
+            raise AuthorSignatureVerificationError(
+                "key_retired", f"key {kid} was retired at {key.get('retired_at')}, before this signature"
             )
     sender = _bare(str(message.get("from", "")))
     if claims.get("from") != sender:
@@ -852,11 +967,13 @@ def verify_author_signature(
     # data is never changed by Agentboxd: present iff signed.
     if expected_data != claims.get("data_sha256"):
         bad.append("data")
+    # to and cc together say who the message went to: once either is signed, both are checked, and the
+    # one left out means none (as the TypeScript SDK and the server read it), so nothing can be added.
     recipients = "to" in claims or "cc" in claims
-    if "to" in claims and _address_set(message.get("to") or []) != list(claims["to"] or []):
-        bad.append("to")
-    if "cc" in claims and _address_set(message.get("cc") or []) != list(claims["cc"] or []):
-        bad.append("cc")
+    if recipients:
+        for field in ("to", "cc"):
+            if _address_set(message.get(field) or []) != list(claims.get(field) or []):
+                bad.append(field)
     in_reply_to = "in_reply_to" in claims
     if in_reply_to and message.get("in_reply_to") != claims["in_reply_to"]:
         bad.append("in_reply_to")
@@ -880,3 +997,293 @@ def verify_author_signature(
         },
         "claims": claims,
     }
+
+
+# ---------- Sign in with Agentboxd: identity tokens (https://agentboxd.com/docs/agent-identity) ----------
+# The Python counterpart of the TypeScript SDK's verifyAgentIdentityToken. Needs the identity extra for PyJWT.
+
+MAX_IDENTITY_TOKEN_SECONDS = 300
+AGENT_CLAIM = "https://agentboxd.com/claims/agent"
+MAILBOX_CLAIM = "https://agentboxd.com/claims/mailbox"
+WORKSPACE_CLAIM = "https://agentboxd.com/claims/workspace"
+RUNBOXD_CLAIM = "https://agentboxd.com/claims/runboxd"
+
+AgentIdentityErrorCode = Literal[
+    "dependencies_missing",
+    "invalid_token",
+    "token_expired",
+    "nonce_mismatch",
+    "not_agent",
+    "token_replayed",
+]
+
+
+class AgentIdentityError(Exception):
+    """Raised when an identity token does not verify. ``code`` says why."""
+
+    def __init__(self, code: AgentIdentityErrorCode, message: str) -> None:
+        super().__init__(message)
+        self.code: AgentIdentityErrorCode = code
+
+
+class AgentWorkspace(TypedDict):
+    """The workspace claim: scope ``workspace`` when the workspace shares its name, or first-party apps."""
+
+    id: str
+    name: str
+
+
+class RunboxdAllowance(TypedDict):
+    """The Runboxd claim: on tokens for first-party apps only. ``None`` means unlimited."""
+
+    v: int
+    workspace: str
+    plan: str
+    computers: Optional[int]
+    computer_hours: Optional[int]
+    memory_mb: Optional[int]
+    vcpus: Optional[int]
+
+
+class VerifiedAgentIdentity(TypedDict):
+    """What ``verify_agent_identity_token`` returns. Key your user record on ``sub``."""
+
+    sub: str
+    email: Optional[str]
+    """The inbox address (scope ``email``), else None. Always None for an identity without a mailbox."""
+    email_verified: bool
+    name: Optional[str]
+    username: Optional[str]
+    is_agent: bool
+    mailbox: bool
+    """False for an identity without a mailbox."""
+    workspace: Optional[AgentWorkspace]
+    runboxd: Optional[RunboxdAllowance]
+    jti: str
+    issuer: str
+    audience: str
+    issued_at: int
+    expires_at: int
+    claims: dict[str, Any]
+
+
+def _identity_jwt() -> Any:
+    try:
+        import jwt
+    except ImportError as err:  # pragma: no cover - exercised only without the extra
+        raise AgentIdentityError(
+            "dependencies_missing",
+            "verify_agent_identity_token needs the identity extra: "
+            f"pip install 'agentboxd[identity]' ({err})",
+        ) from err
+    return jwt
+
+
+def _identity_header(jwt: Any, token: str) -> str:
+    try:
+        header = jwt.get_unverified_header(token)
+    except Exception as err:
+        raise AgentIdentityError("invalid_token", f"invalid identity token: {err}") from err
+    if header.get("alg") != "ES256":
+        raise AgentIdentityError("invalid_token", "identity tokens are ES256")
+    if header.get("typ") not in (None, "JWT"):
+        raise AgentIdentityError("invalid_token", f"unexpected token type {header.get('typ')}")
+    kid = header.get("kid")
+    if not isinstance(kid, str) or not kid:
+        raise AgentIdentityError("invalid_token", "identity token has no kid")
+    return kid
+
+
+def _identity_result(
+    jwt: Any,
+    token: str,
+    key: Optional[Mapping[str, Any]],
+    *,
+    kid: str,
+    audience: str,
+    issuer: str,
+    nonce: Optional[str],
+    replay_cache: Optional[ReplayCache],
+    clock_tolerance: float,
+    require_agent: bool,
+    now: Optional[float],
+) -> VerifiedAgentIdentity:
+    if key is None:
+        raise AgentIdentityError("invalid_token", f"no signing key {kid} in the issuer's JWKS")
+    try:
+        public_key = jwt.PyJWK(dict(key), algorithm="ES256").key
+        claims = cast(
+            dict[str, Any],
+            jwt.decode(
+                token,
+                key=public_key,
+                algorithms=["ES256"],
+                audience=audience,
+                issuer=issuer,
+                leeway=clock_tolerance,
+                options={"require": ["iss", "sub", "aud", "iat", "exp", "jti"]},
+            ),
+        )
+    except jwt.ExpiredSignatureError as err:
+        raise AgentIdentityError("token_expired", "identity token expired") from err
+    except Exception as err:
+        raise AgentIdentityError("invalid_token", f"invalid identity token: {err}") from err
+    current = time.time() if now is None else now
+    iat, exp = claims["iat"], claims["exp"]
+    if not isinstance(iat, (int, float)) or not isinstance(exp, (int, float)):
+        raise AgentIdentityError("invalid_token", "identity token iat and exp must be numbers")
+    if iat > current + clock_tolerance:
+        raise AgentIdentityError("invalid_token", "identity token iat is in the future")
+    if exp - iat > MAX_IDENTITY_TOKEN_SECONDS:
+        raise AgentIdentityError(
+            "invalid_token", f"identity token lives longer than {MAX_IDENTITY_TOKEN_SECONDS} s"
+        )
+    if nonce is not None and claims.get("nonce") != nonce:
+        raise AgentIdentityError("nonce_mismatch", "identity token nonce does not match")
+    is_agent = claims.get(AGENT_CLAIM) is True
+    if require_agent and not is_agent:
+        raise AgentIdentityError("not_agent", "identity token is not an agent identity")
+    # PyJWT accepts the token until exp + leeway, so the jti is kept that long too: until exp alone, a
+    # captured token would verify again in the last ``clock_tolerance`` seconds.
+    if replay_cache is not None and not replay_cache.use(str(claims["jti"]), float(exp) + clock_tolerance):
+        raise AgentIdentityError("token_replayed", "identity token was already used")
+    ws = claims.get(WORKSPACE_CLAIM)
+    workspace: Optional[AgentWorkspace] = (
+        {"id": ws["id"], "name": ws["name"]}
+        if isinstance(ws, Mapping) and isinstance(ws.get("id"), str) and isinstance(ws.get("name"), str)
+        else None
+    )
+    rb = claims.get(RUNBOXD_CLAIM)
+    runboxd = cast(
+        Optional[RunboxdAllowance], dict(rb) if isinstance(rb, Mapping) and rb.get("v") == 1 else None
+    )
+    return {
+        "sub": str(claims["sub"]),
+        "email": claims["email"] if isinstance(claims.get("email"), str) else None,
+        "email_verified": claims.get("email_verified") is True,
+        "name": claims["name"] if isinstance(claims.get("name"), str) else None,
+        "username": claims["preferred_username"]
+        if isinstance(claims.get("preferred_username"), str)
+        else None,
+        "is_agent": is_agent,
+        "mailbox": claims.get(MAILBOX_CLAIM) is not False,
+        "workspace": workspace,
+        "runboxd": runboxd,
+        "jti": str(claims["jti"]),
+        "issuer": str(claims["iss"]),
+        "audience": audience,
+        "issued_at": int(iat),
+        "expires_at": int(exp),
+        "claims": claims,
+    }
+
+
+def _identity_keys(uri: str, fresh: bool) -> Mapping[str, Any]:
+    try:
+        return _fetch_keys(uri, fresh)
+    except (AgentMessageVerificationError, httpx.HTTPError) as err:
+        raise AgentIdentityError("invalid_token", f"could not fetch the issuer's keys: {err}") from err
+
+
+async def _aidentity_keys(uri: str, fresh: bool) -> Mapping[str, Any]:
+    try:
+        return await _afetch_keys(uri, fresh)
+    except (AgentMessageVerificationError, httpx.HTTPError) as err:
+        raise AgentIdentityError("invalid_token", f"could not fetch the issuer's keys: {err}") from err
+
+
+def verify_agent_identity_token(
+    token: str,
+    *,
+    audience: str,
+    issuer: str = DEFAULT_IDENTITY_ISSUER,
+    nonce: Optional[str] = None,
+    replay_cache: Optional[ReplayCache] = None,
+    clock_tolerance: float = 30,
+    require_agent: bool = True,
+    jwks_uri: Optional[str] = None,
+    jwks: Optional[Mapping[str, Any]] = None,
+    now: Optional[float] = None,
+) -> VerifiedAgentIdentity:
+    """Verify an Agentboxd identity token ("Sign in with Agentboxd").
+
+    Checks the ES256 signature against the issuer's JWKS (fetched again for an unknown ``kid``, after a key
+    rotation, at most once a minute), ``iss``, ``aud`` (your ``client_id``), ``exp`` and ``iat`` with
+    ``clock_tolerance`` seconds and at most 300 s of lifetime, ``nonce`` when given, the agent claim, and
+    single use through ``replay_cache``::
+
+        from agentboxd.identity import MemoryReplayCache, verify_agent_identity_token
+
+        replay_cache = MemoryReplayCache()  # several processes: implement ReplayCache on Redis
+        agent = verify_agent_identity_token(
+            id_token, audience="abxc_...", nonce=nonce, replay_cache=replay_cache
+        )
+        agent["sub"], agent["email"], agent["workspace"]
+
+    Pass a ``replay_cache`` unless you exchange the token at the issuer's ``/token`` (JWT bearer grant), which
+    enforces single use there. Raises ``AgentIdentityError``. Needs ``pip install 'agentboxd[identity]'``.
+    """
+    if not audience:
+        raise TypeError("verify_agent_identity_token: audience (your client_id) is required")
+    jwt = _identity_jwt()
+    iss = issuer.rstrip("/")
+    kid = _identity_header(jwt, token)
+    if jwks is not None:
+        key = _find_key(jwks, kid)
+    else:
+        uri = jwks_uri or f"{iss}/.well-known/jwks.json"
+        key = _find_key(_identity_keys(uri, False), kid) or _find_key(_identity_keys(uri, True), kid)
+    return _identity_result(
+        jwt,
+        token,
+        key,
+        kid=kid,
+        audience=audience,
+        issuer=iss,
+        nonce=nonce,
+        replay_cache=replay_cache,
+        clock_tolerance=clock_tolerance,
+        require_agent=require_agent,
+        now=now,
+    )
+
+
+async def averify_agent_identity_token(
+    token: str,
+    *,
+    audience: str,
+    issuer: str = DEFAULT_IDENTITY_ISSUER,
+    nonce: Optional[str] = None,
+    replay_cache: Optional[ReplayCache] = None,
+    clock_tolerance: float = 30,
+    require_agent: bool = True,
+    jwks_uri: Optional[str] = None,
+    jwks: Optional[Mapping[str, Any]] = None,
+    now: Optional[float] = None,
+) -> VerifiedAgentIdentity:
+    """The async form of ``verify_agent_identity_token`` (fetches the key set with ``httpx.AsyncClient``)."""
+    if not audience:
+        raise TypeError("averify_agent_identity_token: audience (your client_id) is required")
+    jwt = _identity_jwt()
+    iss = issuer.rstrip("/")
+    kid = _identity_header(jwt, token)
+    if jwks is not None:
+        key = _find_key(jwks, kid)
+    else:
+        uri = jwks_uri or f"{iss}/.well-known/jwks.json"
+        key = _find_key(await _aidentity_keys(uri, False), kid) or _find_key(
+            await _aidentity_keys(uri, True), kid
+        )
+    return _identity_result(
+        jwt,
+        token,
+        key,
+        kid=kid,
+        audience=audience,
+        issuer=iss,
+        nonce=nonce,
+        replay_cache=replay_cache,
+        clock_tolerance=clock_tolerance,
+        require_agent=require_agent,
+        now=now,
+    )

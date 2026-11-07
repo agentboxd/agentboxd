@@ -2,8 +2,8 @@
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Optional, Union, cast
+from datetime import date, datetime, timezone
+from typing import Any, Literal, Optional, Union, cast
 from urllib.parse import quote
 
 from ._types import (
@@ -66,7 +66,11 @@ class Request:
 
 
 def _seg(value: str) -> str:
-    return quote(str(value), safe="")
+    """One path segment: "/" is escaped, and "." and ".." are refused (URLs resolve them to another route)."""
+    text = str(value)
+    if text in (".", ".."):
+        raise ValueError(f"{text!r} is not a valid id")
+    return quote(text, safe="")
 
 
 def _query(values: Mapping[str, QueryValue]) -> dict[str, str]:
@@ -162,10 +166,16 @@ def inbox_update(
     display_name: Nullable,
     metadata: Optional[MetadataPatch],
     ttl_seconds: Optional[int] = None,
+    promotions_filter: Union[bool, NotGiven, None] = NOT_GIVEN,
 ) -> Request:
     body = _patch(
-        {"display_name": display_name, "metadata": _metadata(metadata), "ttl_seconds": ttl_seconds},
-        nullable=("display_name",),
+        {
+            "display_name": display_name,
+            "metadata": _metadata(metadata),
+            "ttl_seconds": ttl_seconds,
+            "promotions_filter": promotions_filter,
+        },
+        nullable=("display_name", "promotions_filter"),
     )
     return Request("PATCH", f"/v1/inboxes/{_seg(inbox_id)}", json=body)
 
@@ -424,6 +434,45 @@ def message_list(
     include_blocked: Optional[bool] = None,
     channel: Optional[MessageChannel] = None,
     type: Optional[MessageType] = None,
+    screening: Optional[str] = None,
+    include_unscreened: Optional[bool] = None,
+    include_held: Optional[bool] = None,
+    promotions: Optional[Literal["include", "exclude", "only"]] = None,
+    status: Optional[str] = None,
+) -> Request:
+    params = _query(
+        {
+            "labels": None if labels is None else ",".join(labels),
+            "is_read": is_read,
+            "direction": direction,
+            "include_blocked": include_blocked,
+            "promotions": promotions,
+            "channel": channel,
+            "type": type,
+            "screening": screening,
+            "status": status,
+            "include_unscreened": include_unscreened,
+            "include_held": include_held,
+            "cursor": cursor,
+            "limit": limit,
+        }
+    )
+    return Request("GET", f"/v1/inboxes/{_seg(inbox_id)}/messages", params=params)
+
+
+def message_list_all(
+    labels: Optional[Sequence[str]],
+    is_read: Optional[bool],
+    direction: Optional[Direction],
+    cursor: Optional[str],
+    limit: Optional[int],
+    include_blocked: Optional[bool] = None,
+    channel: Optional[MessageChannel] = None,
+    type: Optional[MessageType] = None,
+    screening: Optional[str] = None,
+    include_unscreened: Optional[bool] = None,
+    include_held: Optional[bool] = None,
+    status: Optional[str] = None,
 ) -> Request:
     params = _query(
         {
@@ -433,15 +482,22 @@ def message_list(
             "include_blocked": include_blocked,
             "channel": channel,
             "type": type,
+            "screening": screening,
+            "status": status,
+            "include_unscreened": include_unscreened,
+            "include_held": include_held,
             "cursor": cursor,
             "limit": limit,
         }
     )
-    return Request("GET", f"/v1/inboxes/{_seg(inbox_id)}/messages", params=params)
+    return Request("GET", "/v1/messages", params=params)
 
 
-def message_get(message_id: str) -> Request:
-    return Request("GET", f"/v1/messages/{_seg(message_id)}")
+def message_get(
+    message_id: str, include_unscreened: Optional[bool] = None, include_held: Optional[bool] = None
+) -> Request:
+    params = _query({"include_unscreened": include_unscreened, "include_held": include_held})
+    return Request("GET", f"/v1/messages/{_seg(message_id)}", params=params)
 
 
 def message_update(
@@ -452,6 +508,10 @@ def message_update(
 ) -> Request:
     body = _body({"add_labels": _list(add_labels), "remove_labels": _list(remove_labels), "is_read": is_read})
     return Request("PATCH", f"/v1/messages/{_seg(message_id)}", json=body)
+
+
+def message_release(message_id: str) -> Request:
+    return Request("POST", f"/v1/messages/{_seg(message_id)}/release")
 
 
 def message_draft_reply(message_id: str, instructions: Optional[str], save: Optional[bool] = None) -> Request:
@@ -641,6 +701,191 @@ def draft_cancel(inbox_id: str, draft_id: str) -> Request:
     return Request("POST", f"{_draft_path(inbox_id, draft_id)}/cancel")
 
 
+# ---------- meetings (calendar, beta) ----------
+
+CalendarTime = Union[str, datetime, date]
+"""An ISO 8601 string, a timezone-aware ``datetime`` (naive ones are treated as UTC), or a ``date`` for an
+all-day meeting."""
+
+
+def _when(value: Optional[CalendarTime]) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _iso(value)
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
+
+
+def _calendar_filters(
+    from_: Optional[CalendarTime],
+    to: Optional[CalendarTime],
+    status: Optional[str],
+    role: Optional[str],
+    response: Optional[str],
+    message_id: Optional[str],
+    include_unscreened: Optional[bool],
+    include_held: Optional[bool],
+    cursor: Optional[str],
+    limit: Optional[int],
+    expand: Optional[str] = None,
+) -> dict[str, str]:
+    return _query(
+        {
+            "from": _when(from_),
+            "to": _when(to),
+            "status": status,
+            "role": role,
+            "response": response,
+            "message_id": message_id,
+            "expand": expand,
+            "include_unscreened": include_unscreened,
+            "include_held": include_held,
+            "cursor": cursor,
+            "limit": limit,
+        }
+    )
+
+
+def calendar_list(inbox_id: str, **filters: Any) -> Request:
+    return Request(
+        "GET", f"/v1/inboxes/{_seg(inbox_id)}/calendar/events", params=_calendar_filters(**filters)
+    )
+
+
+def calendar_list_all(**filters: Any) -> Request:
+    return Request("GET", "/v1/calendar/events", params=_calendar_filters(**filters))
+
+
+def _event_path(event_id: str) -> str:
+    return f"/v1/calendar/events/{_seg(event_id)}"
+
+
+def calendar_get(
+    event_id: str, include_unscreened: Optional[bool] = None, include_held: Optional[bool] = None
+) -> Request:
+    params = _query({"include_unscreened": include_unscreened, "include_held": include_held})
+    return Request("GET", _event_path(event_id), params=params)
+
+
+def calendar_respond(
+    event_id: str,
+    response: str,
+    comment: Optional[str] = None,
+    propose: Optional[Mapping[str, CalendarTime]] = None,
+    idempotency_key: Optional[str] = None,
+    include_unscreened: Optional[bool] = None,
+    include_held: Optional[bool] = None,
+    draft: Optional[bool] = None,
+) -> Request:
+    body = _body(
+        {
+            "response": response,
+            "comment": comment,
+            "propose": None
+            if propose is None
+            else {"start": _when(propose.get("start")), "end": _when(propose.get("end"))},
+            "draft": draft,
+        }
+    )
+    params = _query({"include_unscreened": include_unscreened, "include_held": include_held})
+    return Request(
+        "POST", f"{_event_path(event_id)}/respond", params=params, json=body, idempotency_key=idempotency_key
+    )
+
+
+def _attendees(value: Optional[Sequence[Mapping[str, Any]]]) -> Optional[list[dict[str, Any]]]:
+    return None if value is None else [dict(a) for a in value]
+
+
+def calendar_create(
+    inbox_id: str,
+    title: str,
+    start: CalendarTime,
+    attendees: Sequence[Mapping[str, Any]],
+    end: Optional[CalendarTime] = None,
+    duration_minutes: Optional[int] = None,
+    all_day: Optional[bool] = None,
+    time_zone: Optional[str] = None,
+    description: Optional[str] = None,
+    location: Optional[str] = None,
+    conference_url: Optional[str] = None,
+    rrule: Optional[str] = None,
+    message: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+    draft: Optional[bool] = None,
+) -> Request:
+    body = _body(
+        {
+            "title": title,
+            "start": _when(start),
+            "end": _when(end),
+            "duration_minutes": duration_minutes,
+            "all_day": all_day,
+            "time_zone": time_zone,
+            "attendees": _attendees(attendees),
+            "description": description,
+            "location": location,
+            "conference_url": conference_url,
+            "recurrence": None if rrule is None else {"rrule": rrule},
+            "message": message,
+            "draft": draft,
+        }
+    )
+    return Request(
+        "POST", f"/v1/inboxes/{_seg(inbox_id)}/calendar/events", json=body, idempotency_key=idempotency_key
+    )
+
+
+def calendar_update(
+    event_id: str,
+    title: Optional[str] = None,
+    start: Optional[CalendarTime] = None,
+    end: Optional[CalendarTime] = None,
+    duration_minutes: Optional[int] = None,
+    time_zone: Optional[str] = None,
+    attendees: Optional[Sequence[Mapping[str, Any]]] = None,
+    description: NullableText = NOT_GIVEN,
+    location: NullableText = NOT_GIVEN,
+    conference_url: NullableText = NOT_GIVEN,
+    message: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+    draft: Optional[bool] = None,
+) -> Request:
+    body = _patch(
+        {
+            "title": title,
+            "start": _when(start),
+            "end": _when(end),
+            "duration_minutes": duration_minutes,
+            "time_zone": time_zone,
+            "attendees": _attendees(attendees),
+            "description": description,
+            "location": location,
+            "conference_url": conference_url,
+            "message": message,
+            "draft": draft,
+        },
+        nullable=("description", "location", "conference_url"),
+    )
+    return Request("PATCH", _event_path(event_id), json=body, idempotency_key=idempotency_key)
+
+
+def calendar_cancel(
+    event_id: str,
+    message: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+    draft: Optional[bool] = None,
+) -> Request:
+    return Request(
+        "POST",
+        f"{_event_path(event_id)}/cancel",
+        json=_body({"message": message, "draft": draft}),
+        idempotency_key=idempotency_key,
+    )
+
+
 def message_wait(
     inbox_id: str,
     timeout: float,
@@ -650,6 +895,8 @@ def message_wait(
     direction: Optional[Direction],
     channel: Optional[MessageChannel] = None,
     type: Optional[MessageType] = None,
+    include_unscreened: Optional[bool] = None,
+    include_held: Optional[bool] = None,
 ) -> Request:
     params = _query(
         {
@@ -660,6 +907,8 @@ def message_wait(
             "direction": direction,
             "channel": channel,
             "type": type,
+            "include_unscreened": include_unscreened,
+            "include_held": include_held,
         }
     )
     return Request("GET", f"/v1/inboxes/{_seg(inbox_id)}/messages/wait", params=params, wait_seconds=timeout)
@@ -675,6 +924,9 @@ def message_claim(
     since: Optional[str],
     type: Optional[MessageType] = None,
     channel: Optional[MessageChannel] = None,
+    analysis: Optional[str] = None,
+    include_unscreened: Optional[bool] = None,
+    include_held: Optional[bool] = None,
 ) -> Request:
     body = _body(
         {
@@ -686,6 +938,9 @@ def message_claim(
             "since": since,
             "type": type,
             "channel": channel,
+            "analysis": analysis,
+            "include_unscreened": include_unscreened,
+            "include_held": include_held,
         }
     )
     return Request(
@@ -709,9 +964,20 @@ def message_extend(message_id: str, lease_id: str, lease_seconds: Optional[int])
 
 
 def message_wait_for_verification(
-    inbox_id: str, timeout: float, since: Optional[str], from_: Optional[str]
+    inbox_id: str,
+    timeout: float,
+    since: Optional[str],
+    from_: Optional[str],
+    include_unauthenticated: Optional[bool] = None,
 ) -> Request:
-    params = _query({"timeout": _num(timeout), "since": since, "from": from_})
+    params = _query(
+        {
+            "timeout": _num(timeout),
+            "since": since,
+            "from": from_,
+            "include_unauthenticated": include_unauthenticated,
+        }
+    )
     return Request("GET", f"/v1/inboxes/{_seg(inbox_id)}/verification", params=params, wait_seconds=timeout)
 
 
@@ -722,9 +988,91 @@ def _num(value: float) -> Union[int, float]:
 # ---------- threads & search ----------
 
 
-def thread_list(inbox_id: str, cursor: Optional[str], limit: Optional[int]) -> Request:
-    params = _query({"cursor": cursor, "limit": limit})
+def _thread_filters(
+    cursor: Optional[str],
+    limit: Optional[int],
+    labels: Optional[Sequence[str]] = None,
+    before: Optional[str] = None,
+    after: Optional[str] = None,
+    participant: Optional[str] = None,
+    subject: Optional[str] = None,
+    ascending: Optional[bool] = None,
+    inbox_id: Optional[str] = None,
+) -> dict[str, str]:
+    return _query(
+        {
+            "cursor": cursor,
+            "limit": limit,
+            "labels": ",".join(labels) if labels else None,
+            "before": before,
+            "after": after,
+            "participant": participant,
+            "subject": subject,
+            "ascending": True if ascending else None,
+            "inbox_id": inbox_id,
+        }
+    )
+
+
+def thread_list(inbox_id: str, cursor: Optional[str], limit: Optional[int], **filters: Any) -> Request:
+    params = _thread_filters(cursor, limit, **filters)
     return Request("GET", f"/v1/inboxes/{_seg(inbox_id)}/threads", params=params)
+
+
+def thread_list_all(cursor: Optional[str], limit: Optional[int], **filters: Any) -> Request:
+    return Request("GET", "/v1/threads", params=_thread_filters(cursor, limit, **filters))
+
+
+def thread_delete(thread_id: str) -> Request:
+    return Request("DELETE", f"/v1/threads/{_seg(thread_id)}")
+
+
+def message_forward(
+    inbox_id: str,
+    message_id: str,
+    to: Recipients,
+    cc: Optional[Recipients],
+    bcc: Optional[Recipients],
+    text: Optional[str],
+    html: Optional[str],
+    include_attachments: Optional[bool],
+    labels: Optional[Sequence[str]],
+    idempotency_key: Optional[str],
+) -> Request:
+    body = _body(
+        {
+            "to": _recipients(to),
+            "cc": _recipients(cc),
+            "bcc": _recipients(bcc),
+            "text": text,
+            "html": html,
+            "include_attachments": include_attachments,
+            "labels": _list(labels),
+        }
+    )
+    return Request(
+        "POST",
+        f"/v1/inboxes/{_seg(inbox_id)}/messages/{_seg(message_id)}/forward",
+        json=body,
+        idempotency_key=idempotency_key,
+    )
+
+
+def messages_batch_get(
+    ids: Sequence[str], include_unscreened: Optional[bool] = None, include_held: Optional[bool] = None
+) -> Request:
+    body = _body({"ids": list(ids), "include_unscreened": include_unscreened, "include_held": include_held})
+    return Request("POST", "/v1/messages/batch-get", json=body)
+
+
+def messages_batch_update(
+    ids: Sequence[str],
+    add_labels: Optional[Sequence[str]],
+    remove_labels: Optional[Sequence[str]],
+    is_read: Optional[bool],
+) -> Request:
+    body = _body({"add_labels": _list(add_labels), "remove_labels": _list(remove_labels), "is_read": is_read})
+    return Request("POST", "/v1/messages/batch-update", json={"ids": list(ids), **body})
 
 
 def thread_get(thread_id: str) -> Request:
@@ -750,18 +1098,32 @@ def thread_update(
 # ---------- contacts ----------
 
 
+def _kinds(kind: Union[str, Sequence[str], None]) -> Optional[str]:
+    if kind is None or isinstance(kind, str):
+        return kind
+    return ",".join(kind)
+
+
 def contact_list(
     q: Optional[str],
     label: Optional[str],
     metadata: Optional[MetadataFilter],
     cursor: Optional[str],
     limit: Optional[int],
+    kind: Union[str, Sequence[str], None] = None,
+    domain: Optional[str] = None,
 ) -> Request:
     params = {
-        **_query({"q": q, "label": label, "cursor": cursor, "limit": limit}),
+        **_query(
+            {"q": q, "label": label, "kind": _kinds(kind), "domain": domain, "cursor": cursor, "limit": limit}
+        ),
         **_metadata_query(metadata),
     }
     return Request("GET", "/v1/contacts", params=params)
+
+
+def contact_domains(kind: Union[str, Sequence[str], None], limit: Optional[int]) -> Request:
+    return Request("GET", "/v1/contacts/domains", params=_query({"kind": _kinds(kind), "limit": limit}))
 
 
 def contact_get(contact_id: str) -> Request:
@@ -779,6 +1141,7 @@ def contact_update(
     metadata: Optional[MetadataPatch],
     add_labels: Optional[Sequence[str]],
     remove_labels: Optional[Sequence[str]],
+    kind: Optional[str] = None,
 ) -> Request:
     body = _patch(
         {
@@ -787,10 +1150,30 @@ def contact_update(
             "metadata": _metadata(metadata),
             "add_labels": _list(add_labels),
             "remove_labels": _list(remove_labels),
+            "kind": kind,
         },
         nullable=("name", "notes"),
     )
     return Request("PATCH", f"/v1/contacts/{_seg(contact_id)}", json=body)
+
+
+def contact_delete(contact_id: str, forget: bool = False) -> Request:
+    return Request("DELETE", f"/v1/contacts/{_seg(contact_id)}", params={"forget": "true"} if forget else {})
+
+
+def contact_delete_many(
+    kind: Optional[Sequence[str]], domain: Optional[str], forget: bool, dry_run: bool
+) -> Request:
+    body: dict[str, Any] = {}
+    if kind is not None:
+        body["kind"] = list(kind)
+    if domain is not None:
+        body["domain"] = domain
+    if forget:
+        body["forget"] = True
+    if dry_run:
+        body["dry_run"] = True
+    return Request("POST", "/v1/contacts/delete", json=body)
 
 
 # ---------- knowledge ----------
@@ -863,6 +1246,7 @@ def webhook_create(
     inbox_ids: InboxIds,
     secret: Optional[str],
     payload: Optional[WebhookPayload] = None,
+    headers: Optional[Mapping[str, str]] = None,
 ) -> Request:
     body = _body_keep_null(
         {
@@ -871,6 +1255,7 @@ def webhook_create(
             "inbox_ids": _inbox_ids(inbox_ids),
             "secret": secret,
             "payload": payload,
+            "headers": dict(headers) if headers is not None else None,
         },
         "inbox_ids",
     )
@@ -892,6 +1277,7 @@ def webhook_update(
     inbox_ids: InboxIds,
     enabled: Optional[bool],
     payload: Optional[WebhookPayload] = None,
+    headers: Optional[Mapping[str, str]] = None,
 ) -> Request:
     body = _body_keep_null(
         {
@@ -900,6 +1286,7 @@ def webhook_update(
             "inbox_ids": _inbox_ids(inbox_ids),
             "enabled": enabled,
             "payload": payload,
+            "headers": dict(headers) if headers is not None else None,
         },
         "inbox_ids",
     )
@@ -912,6 +1299,40 @@ def webhook_delete(webhook_id: str) -> Request:
 
 def webhook_test(webhook_id: str) -> Request:
     return Request("POST", f"/v1/webhooks/{_seg(webhook_id)}/test")
+
+
+def webhook_rotate_secret(webhook_id: str, secret: Optional[str]) -> Request:
+    return Request("POST", f"/v1/webhooks/{_seg(webhook_id)}/rotate-secret", json=_body({"secret": secret}))
+
+
+def webhook_deliveries(
+    webhook_id: str, status: Optional[str], cursor: Optional[str], limit: Optional[int]
+) -> Request:
+    params = _query({"status": status, "cursor": cursor, "limit": limit})
+    return Request("GET", f"/v1/webhooks/{_seg(webhook_id)}/deliveries", params=params)
+
+
+def webhook_redeliver(webhook_id: str, delivery_id: Optional[str], event_id: Optional[str]) -> Request:
+    if (delivery_id is None) == (event_id is None):
+        raise ValueError("pass exactly one of delivery_id and event_id")
+    if delivery_id is not None:
+        return Request("POST", f"/v1/webhooks/{_seg(webhook_id)}/deliveries/{_seg(delivery_id)}/redeliver")
+    return Request("POST", f"/v1/webhooks/{_seg(webhook_id)}/redeliver", json={"event_id": event_id})
+
+
+# ---------- the workspace's suppression list ----------
+
+
+def suppression_list(
+    reason: Optional[str], q: Optional[str], cursor: Optional[str], limit: Optional[int]
+) -> Request:
+    params = _query({"reason": reason, "q": q, "cursor": cursor, "limit": limit})
+    return Request("GET", "/v1/suppressions", params=params)
+
+
+def suppression_remove(address: str, confirm: bool) -> Request:
+    params = _query({"confirm": True}) if confirm else {}
+    return Request("DELETE", f"/v1/suppressions/{_seg(address)}", params=params)
 
 
 # ---------- custom domains ----------
@@ -927,6 +1348,10 @@ def domain_list() -> Request:
 
 def domain_get(domain_id: str) -> Request:
     return Request("GET", f"/v1/domains/{_seg(domain_id)}")
+
+
+def domain_zone_file(domain_id: str) -> Request:
+    return Request("GET", f"/v1/domains/{_seg(domain_id)}/zone-file")
 
 
 def domain_verify(domain_id: str) -> Request:
@@ -1038,6 +1463,26 @@ def emergency_stop(reason: Optional[str]) -> Request:
     return Request("POST", "/v1/emergency-stop", json=_body({"reason": reason}))
 
 
+def forwarding_list(inbox_id: str) -> Request:
+    return Request("GET", f"/v1/inboxes/{_seg(inbox_id)}/forwarding")
+
+
+def forwarding_add(inbox_id: str, address: str, skip_flagged: Optional[bool]) -> Request:
+    return Request(
+        "POST",
+        f"/v1/inboxes/{_seg(inbox_id)}/forwarding",
+        json=_body({"address": address, "skip_flagged": skip_flagged}),
+    )
+
+
+def forwarding_resend(inbox_id: str, forward_id: str) -> Request:
+    return Request("POST", f"/v1/inboxes/{_seg(inbox_id)}/forwarding/{_seg(forward_id)}/resend")
+
+
+def forwarding_remove(inbox_id: str, forward_id: str) -> Request:
+    return Request("DELETE", f"/v1/inboxes/{_seg(inbox_id)}/forwarding/{_seg(forward_id)}")
+
+
 def escalation_get() -> Request:
     return Request("GET", "/v1/escalation")
 
@@ -1061,6 +1506,10 @@ def inbox_escalation_update(inbox_id: str, body: Mapping[str, Any]) -> Request:
 
 def signup_claim(email: str) -> Request:
     return Request("POST", "/v1/signup/claim", json={"email": email})
+
+
+def signup_add_agent(kind: Optional[str] = None, expires_at: Optional[str] = None) -> Request:
+    return Request("POST", "/v1/signup/agents", json=_body({"kind": kind, "expires_at": expires_at}))
 
 
 # ---------- agent identity (Sign in with Agentboxd) ----------

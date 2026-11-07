@@ -134,6 +134,14 @@ def test_path_segments_are_escaped(client: Agentboxd, rec: Recorder) -> None:
     assert rec.last.url.raw_path == b"/v1/messages/..%2Finboxes"
 
 
+def test_dot_segment_ids_are_refused(client: Agentboxd, rec: Recorder) -> None:
+    # URLs resolve "." and "..": /v1/inboxes/.. would reach /v1/ instead of an inbox.
+    for bad in (".", ".."):
+        with pytest.raises(ValueError):
+            client.inboxes.get(bad)
+    assert rec.requests == []
+
+
 # ---------- messages ----------
 
 
@@ -244,6 +252,7 @@ def test_wait_for_verification(client: Agentboxd, rec: Recorder) -> None:
         "subject": "Your code",
         "received_at": "2026-09-24T12:00:01Z",
     }
+    flagged: dict[str, Any] = {**result, "auth_failed": True}
     rec.reply({"data": result})
     got = client.messages.wait_for_verification("ibx_1", since="2026-09-24T12:00:00Z", from_="site.com")
     assert got == result
@@ -253,6 +262,11 @@ def test_wait_for_verification(client: Agentboxd, rec: Recorder) -> None:
 
     rec.reply({"data": None})
     assert client.messages.wait_for_verification("ibx_1", timeout=2) is None
+
+    rec.reply({"data": flagged})
+    spoofed = client.messages.wait_for_verification("ibx_1", timeout=2, include_unauthenticated=True)
+    assert spoofed is not None and spoofed["auth_failed"] is True
+    assert rec.last_params() == {"timeout": "2", "include_unauthenticated": "true"}
 
 
 # ---------- threads, search ----------

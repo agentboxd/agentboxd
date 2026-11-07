@@ -2,14 +2,19 @@
  * The hosted remote MCP server (https://mcp.agentboxd.com/mcp): an OAuth 2.1 protected resource in front
  * of the same tools as the npm package. See docs/remote-mcp-contract.md §2 and §5.
  *
- * Per request: Host and Origin checks (DNS rebinding) → body limit → the Bearer access token is exchanged
- * at the authorization server for a short-lived API token (the person's token never reaches the API) →
- * per-grant rate limit → a fresh stateless MCP server whose tools call the API with that token.
+ * Per request: Host and Origin checks (DNS rebinding) → a Bearer header (else 401) → a declared body over the limit
+ * gets 413 → per-grant rate limit for a token already known from an earlier exchange (429, no exchange) → the Bearer
+ * access token is exchanged at the authorization server for a short-lived API token (the person's token never
+ * reaches the API; else 401 or 503) → per-grant rate limit for a token that was not known → only then is the body
+ * read and parsed; a JSON-RPC batch counts each of its messages against the limit → a fresh stateless MCP server whose
+ * tools call the API with that token.
  */
+import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Agentboxd } from '../../sdk/src/index.js';
-import { ConfigError } from './config.js';
+import { ConfigError, positiveInt } from './config.js';
+import { BodyTooLarge, declaresMoreThan, DEFAULT_MAX_BODY_BYTES, readBody } from './httpBody.js';
 import { createAgentboxdMcpServer } from './server.js';
 
 export const CONNECTOR_SCOPE = 'mcp';
@@ -40,13 +45,6 @@ const list = (v: string | undefined) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
-function positiveInt(name: string, raw: string | undefined, fallback: number): number {
-  if (!raw?.trim()) return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1) throw new ConfigError(`${name} must be a positive integer`);
-  return n;
-}
-
 function url(name: string, raw: string | undefined, fallback?: string): string {
   const v = (raw?.trim() || fallback)?.replace(/\/+$/, '');
   if (!v) throw new ConfigError(`${name} is required`);
@@ -76,7 +74,7 @@ export function loadHostedConfig(env: NodeJS.ProcessEnv = process.env): HostedCo
     exchangeSecret,
     allowedOrigins,
     allowedHosts,
-    maxBodyBytes: positiveInt('MCP_MAX_BODY_BYTES', env.MCP_MAX_BODY_BYTES, 4 * 1024 * 1024),
+    maxBodyBytes: positiveInt('MCP_MAX_BODY_BYTES', env.MCP_MAX_BODY_BYTES, DEFAULT_MAX_BODY_BYTES),
     rateLimitPerMinute: positiveInt('MCP_RATE_LIMIT_PER_MINUTE', env.MCP_RATE_LIMIT_PER_MINUTE, 120),
     port: positiveInt('MCP_HTTP_PORT', env.MCP_HTTP_PORT, 3334),
     host: env.MCP_HTTP_HOST?.trim() || '0.0.0.0',
@@ -114,7 +112,8 @@ export function wwwAuthenticate(cfg: Pick<HostedConfig, 'resource'>, error?: { c
 // ---------- token exchange (§5.1) ----------
 
 export type ExchangeResult =
-  | { ok: true; token: string; grantId: string; clientId: string }
+  /** `expiresIn`: seconds the service token lives (`expires_in`), never past the access token's own expiry. */
+  | { ok: true; token: string; grantId: string; clientId: string; expiresIn?: number }
   | { ok: false; kind: 'invalid' | 'unavailable'; description: string };
 
 export type Exchanger = (accessToken: string) => Promise<ExchangeResult>;
@@ -154,7 +153,8 @@ export function httpExchanger(cfg: HostedConfig, fetchFn: typeof fetch = fetch):
     }
     const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
     if (res.ok && body && typeof body.access_token === 'string' && typeof body.grant_id === 'string') {
-      return { ok: true, token: body.access_token, grantId: body.grant_id, clientId: String(body.client_id ?? '') };
+      const expiresIn = typeof body.expires_in === 'number' && body.expires_in > 0 ? body.expires_in : undefined;
+      return { ok: true, token: body.access_token, grantId: body.grant_id, clientId: String(body.client_id ?? ''), ...(expiresIn !== undefined && { expiresIn }) };
     }
     if (res.status === 400 && body?.error === 'invalid_grant') {
       return { ok: false, kind: 'invalid', description: 'the access token is invalid, expired or revoked' };
@@ -174,15 +174,81 @@ export class GrantRateLimiter {
     private readonly now: () => number = Date.now,
   ) {}
 
-  /** Seconds until the window resets when over the limit, else 0. */
-  take(grantId: string): number {
+  /** Counts `n` requests (one, or the messages of a JSON-RPC batch). Seconds until the window resets when over the limit, else 0. */
+  take(grantId: string, n = 1): number {
     const window = Math.floor(this.now() / 60_000);
     const w = this.windows.get(grantId);
     const entry = w && w.window === window ? w : { window, count: 0 };
-    entry.count++;
+    entry.count += n;
     this.windows.set(grantId, entry);
     if (this.windows.size > 10_000) for (const [k, v] of this.windows) if (v.window !== window) this.windows.delete(k);
-    return entry.count > this.limit ? 60 - (Math.floor(this.now() / 1000) % 60) : 0;
+    return entry.count > this.limit ? this.secondsToReset() : 0;
+  }
+
+  /**
+   * Takes back one request that `take` let through in this window, because it ended before it was served (its token
+   * exchange failed). Nothing to take back once the window has changed.
+   */
+  refund(grantId: string): void {
+    const w = this.windows.get(grantId);
+    if (w && w.window === Math.floor(this.now() / 60_000) && w.count > 0) w.count--;
+  }
+
+  private secondsToReset(): number {
+    return 60 - (Math.floor(this.now() / 1000) % 60);
+  }
+}
+
+/** How long a token is remembered when the exchange gave no lifetime, and the most it is ever remembered. */
+const KNOWN_TOKEN_DEFAULT_SECONDS = 60;
+const KNOWN_TOKEN_MAX_SECONDS = 300;
+
+/**
+ * The grant behind each access token that was exchanged successfully, so a request is counted against its
+ * connection's minute before the exchange, and one past the limit costs no exchange. Keyed by the token's SHA-256 (the token
+ * itself is never kept). An entry lasts as long as the service token its exchange returned (at most 5 minutes,
+ * never past the access token's expiry); past `max` entries the oldest go first. Only successful exchanges add
+ * entries, so made-up tokens can't grow it.
+ */
+export class KnownTokens {
+  private entries = new Map<string, { grantId: string; clientId: string; until: number }>();
+  constructor(
+    private readonly max = 10_000,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  private static key(token: string): string {
+    return createHash('sha256').update(token).digest('base64url');
+  }
+
+  get(token: string): { grantId: string; clientId: string } | undefined {
+    const key = KnownTokens.key(token);
+    const e = this.entries.get(key);
+    if (!e) return undefined;
+    if (e.until <= this.now()) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return { grantId: e.grantId, clientId: e.clientId };
+  }
+
+  remember(token: string, grantId: string, clientId: string, expiresIn: number | undefined): void {
+    const key = KnownTokens.key(token);
+    const seconds = Math.min(expiresIn ?? KNOWN_TOKEN_DEFAULT_SECONDS, KNOWN_TOKEN_MAX_SECONDS);
+    this.entries.delete(key); // re-inserted last, so the oldest stay first in line to go
+    this.entries.set(key, { grantId, clientId, until: this.now() + seconds * 1000 });
+    for (const oldest of this.entries.keys()) {
+      if (this.entries.size <= this.max) break;
+      this.entries.delete(oldest);
+    }
+  }
+
+  forget(token: string): void {
+    this.entries.delete(KnownTokens.key(token));
+  }
+
+  get size(): number {
+    return this.entries.size;
   }
 }
 
@@ -197,30 +263,17 @@ export interface HostedDeps {
   now?: () => number;
 }
 
-class BodyTooLarge extends Error {}
-
-async function readBody(req: IncomingMessage, max: number): Promise<Buffer> {
-  const declared = Number(req.headers['content-length'] ?? '0');
-  if (declared > max) throw new BodyTooLarge();
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > max) throw new BodyTooLarge();
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks);
-}
-
 function json(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}) {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers }).end(JSON.stringify(body));
 }
 
 const rpcError = (code: number, message: string) => ({ jsonrpc: '2.0', error: { code, message }, id: null });
 
-/** What to log about a JSON-RPC body: the method and, for tools/call, the tool name. Nothing else. */
-function describeRpc(body: unknown): { rpc?: string; tool?: string } {
-  if (Array.isArray(body)) return { rpc: 'batch' };
+/** The most messages of a batch whose methods are logged: the MCP SDK refuses larger batches anyway. */
+const MAX_LOGGED_BATCH = 100;
+
+/** The method of one JSON-RPC message and, for tools/call, the tool name. */
+function describeMessage(body: unknown): { rpc?: string; tool?: string } {
   if (!body || typeof body !== 'object') return {};
   const m = (body as { method?: unknown }).method;
   const name = (body as { params?: { name?: unknown } }).params?.name;
@@ -228,6 +281,17 @@ function describeRpc(body: unknown): { rpc?: string; tool?: string } {
     rpc: typeof m === 'string' ? m.slice(0, 64) : undefined,
     tool: m === 'tools/call' && typeof name === 'string' ? name.slice(0, 64) : undefined,
   };
+}
+
+/**
+ * What to log about a JSON-RPC body: the method and, for tools/call, the tool name; for a batch, its size and the
+ * method (and tool) of each message, in order (a message without a method, such as a response, shows null). Nothing else.
+ */
+export function describeRpc(body: unknown): { rpc?: string; tool?: string; batch?: number; methods?: (string | null)[]; tools?: string[] } {
+  if (!Array.isArray(body)) return describeMessage(body);
+  const each = body.slice(0, MAX_LOGGED_BATCH).map(describeMessage);
+  const tools = each.flatMap((d) => (d.tool ? [d.tool] : []));
+  return { rpc: 'batch', batch: body.length, methods: each.map((d) => d.rpc ?? null), ...(tools.length ? { tools } : {}) };
 }
 
 const CORS_ALLOW_HEADERS = 'Authorization, Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version, Mcp-Method, Mcp-Name, Last-Event-ID';
@@ -238,6 +302,7 @@ export function createHostedHandler(cfg: HostedConfig, deps: HostedDeps = {}) {
   const log = deps.log ?? ((e) => process.stdout.write(`${JSON.stringify(e)}\n`));
   const now = deps.now ?? Date.now;
   const limiter = new GrantRateLimiter(cfg.rateLimitPerMinute, now);
+  const known = new KnownTokens(10_000, now);
   const endpoint = mcpPath(cfg);
   const prmPaths = new Set(['/.well-known/oauth-protected-resource', `/.well-known/oauth-protected-resource${endpoint}`]);
   const allowedOrigins = new Set(cfg.allowedOrigins);
@@ -277,11 +342,59 @@ export function createHostedHandler(cfg: HostedConfig, deps: HostedDeps = {}) {
     // Stateless (2026-07-28 shape): no standalone SSE stream, no sessions to delete.
     if (req.method !== 'POST') return json(res, 405, rpcError(-32000, 'Method not allowed: POST JSON-RPC messages to this endpoint'), { Allow: 'POST, OPTIONS' });
 
+    // Authentication: Bearer header only (never a query parameter). Every MCP method needs it, so a request
+    // without one gets its 401 before its body is read.
+    const auth = req.headers.authorization;
+    const bearer = typeof auth === 'string' ? /^Bearer\s+([A-Za-z0-9._~+/=-]+)$/i.exec(auth.trim())?.[1] : undefined;
+    if (!bearer) {
+      return json(res, 401, { error: 'invalid_token', error_description: 'sign in to Agentboxd to use this MCP server' }, { 'WWW-Authenticate': wwwAuthenticate(cfg) });
+    }
+    if (declaresMoreThan(req, cfg.maxBodyBytes)) return json(res, 413, rpcError(-32000, new BodyTooLarge(cfg.maxBodyBytes).message));
+
+    // The body is read only after the token is exchanged and the request counted against its connection's minute:
+    // a made-up token gets its 401 with the body unread, and a body sent slowly can't keep a request past the limit.
+    // A token known from an earlier exchange is counted before the exchange, so past the limit it costs none, even
+    // for requests sent all at once. A failed exchange takes the request back: only requests whose token is
+    // exchanged count, as for a token that is not known yet.
+    const tooMany = (retryAfter: number) =>
+      json(res, 429, rpcError(-32000, 'Rate limit exceeded for this connection'), { 'Retry-After': String(retryAfter) });
+    const seen = known.get(bearer);
+    if (seen) {
+      const retryAfter = limiter.take(seen.grantId);
+      if (retryAfter) {
+        entry.grant = seen.grantId;
+        entry.client = seen.clientId;
+        return tooMany(retryAfter);
+      }
+    }
+
+    const exchanged = await exchange(bearer);
+    if (!exchanged.ok) {
+      if (seen) limiter.refund(seen.grantId);
+      if (exchanged.kind === 'unavailable') {
+        entry.error = exchanged.description;
+        return json(res, 503, rpcError(-32000, 'Agentboxd is temporarily unavailable; try again shortly'), { 'Retry-After': '5' });
+      }
+      known.forget(bearer);
+      return json(res, 401, { error: 'invalid_token', error_description: exchanged.description }, {
+        'WWW-Authenticate': wwwAuthenticate(cfg, { code: 'invalid_token', description: exchanged.description }),
+      });
+    }
+    entry.grant = exchanged.grantId;
+    entry.client = exchanged.clientId;
+    known.remember(bearer, exchanged.grantId, exchanged.clientId, exchanged.expiresIn);
+    if (seen?.grantId !== exchanged.grantId) {
+      if (seen) limiter.refund(seen.grantId);
+      const retryAfter = limiter.take(exchanged.grantId);
+      if (retryAfter) return tooMany(retryAfter);
+    }
+
+    // Counted from here on, malformed or not: a request that cost an exchange always counts.
     let raw: Buffer;
     try {
       raw = await readBody(req, cfg.maxBodyBytes);
     } catch (err) {
-      if (err instanceof BodyTooLarge) return json(res, 413, rpcError(-32000, `Request body larger than ${cfg.maxBodyBytes} bytes`));
+      if (err instanceof BodyTooLarge) return json(res, 413, rpcError(-32000, err.message));
       throw err;
     }
     let body: unknown;
@@ -291,28 +404,12 @@ export function createHostedHandler(cfg: HostedConfig, deps: HostedDeps = {}) {
       return json(res, 400, rpcError(-32700, 'Parse error: the body is not valid JSON'));
     }
     Object.assign(entry, describeRpc(body));
-
-    // Authentication: Bearer header only (never a query parameter). Every MCP method needs it.
-    const auth = req.headers.authorization;
-    const bearer = typeof auth === 'string' ? /^Bearer\s+([A-Za-z0-9._~+/=-]+)$/i.exec(auth.trim())?.[1] : undefined;
-    if (!bearer) {
-      return json(res, 401, { error: 'invalid_token', error_description: 'sign in to Agentboxd to use this MCP server' }, { 'WWW-Authenticate': wwwAuthenticate(cfg) });
+    // A JSON-RPC batch (protocol 2025-03-26, which the SDK still accepts) runs each of its messages: it counts as that
+    // many requests, so up to 100 tool calls can't ride on one. The request itself was counted above.
+    if (Array.isArray(body) && body.length > 1) {
+      const retryAfter = limiter.take(exchanged.grantId, body.length - 1);
+      if (retryAfter) return tooMany(retryAfter);
     }
-    const exchanged = await exchange(bearer);
-    if (!exchanged.ok) {
-      if (exchanged.kind === 'unavailable') {
-        entry.error = exchanged.description;
-        return json(res, 503, rpcError(-32000, 'Agentboxd is temporarily unavailable; try again shortly'), { 'Retry-After': '5' });
-      }
-      return json(res, 401, { error: 'invalid_token', error_description: exchanged.description }, {
-        'WWW-Authenticate': wwwAuthenticate(cfg, { code: 'invalid_token', description: exchanged.description }),
-      });
-    }
-    entry.grant = exchanged.grantId;
-    entry.client = exchanged.clientId;
-
-    const retryAfter = limiter.take(exchanged.grantId);
-    if (retryAfter) return json(res, 429, rpcError(-32000, 'Rate limit exceeded for this connection'), { 'Retry-After': String(retryAfter) });
 
     const client = new Agentboxd({ apiKey: exchanged.token, baseUrl: cfg.internalUrl, fetch: deps.fetch });
     const server = createAgentboxdMcpServer(client, { hosted: true });

@@ -11,7 +11,7 @@ Guide: https://agentboxd.com/guides/google-adk-email-agent
 
 ```bash
 python -m venv .venv && . .venv/bin/activate      # .venv\Scripts\activate on Windows
-pip install -r requirements.txt                   # in this repository: pip install -e ../../../sdk-python first
+pip install -r requirements.txt                   # from this folder: agentboxd comes from ../../../sdk-python
 cp email_agent/.env.example email_agent/.env      # fill in GOOGLE_API_KEY and AGENTBOXD_API_KEY
 adk web                                           # from this folder; pick email_agent
 adk run email_agent                               # or in the terminal
