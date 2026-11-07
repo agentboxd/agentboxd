@@ -487,6 +487,8 @@ class FakeWS {
   static sockets = [];
   /** Fields of the message in each event. */
   static message = {};
+  /** Called once a socket has delivered its events (see stopAfterEvents). */
+  static delivered = null;
   constructor(url) {
     this.url = url;
     this.readyState = 0;
@@ -512,12 +514,25 @@ class FakeWS {
             event: { id, type: 'message.received', created_at: '2026-09-26T12:00:00Z', data: { message: message({ id: `msg_${id}`, ...FakeWS.message }) } },
           }),
         });
+      FakeWS.delivered?.();
     }, 0);
   }
   close(code = 1000, reason = '') {
     this.readyState = 3;
     setTimeout(() => this.onclose?.({ code, reason }), 0);
   }
+}
+
+/**
+ * Interrupts `tail` once the fake socket has delivered its events (and the CLI has printed them),
+ * not after a fixed delay, which a slow runner can outlast. The fallback stops a run that never subscribes.
+ */
+function stopAfterEvents(stop) {
+  FakeWS.delivered = () => {
+    FakeWS.delivered = null;
+    setTimeout(stop, 0);
+  };
+  setTimeout(stop, 5000).unref();
 }
 
 test('tail: subscribes with filters and prints events until interrupted', async () => {
@@ -529,7 +544,7 @@ test('tail: subscribes with filters and prints events until interrupted', async 
     'GET /v1/inboxes': { data: [inbox()], next_cursor: null },
   };
   routes['POST /v1/stream/token'] = () => [201, { token: 'st_1', expires_at: '', url: 'ws://api.test/v1/stream?token=st_1' }];
-  setTimeout(() => stop(), 50);
+  stopAfterEvents(stop);
   const r = await cli(['tail', '--inbox', 'bot@homingbox.net', '--event', 'message.received', '--envelope', '--json'], { routes, WebSocket: FakeWS, interrupted });
   assert.equal(r.code, 0, r.stderr);
   assert.equal(FakeWS.sockets[0].url, 'ws://api.test/v1/stream?token=st_1');
@@ -540,7 +555,7 @@ test('tail: subscribes with filters and prints events until interrupted', async 
   FakeWS.sockets = [];
   let stop2;
   const int2 = new Promise((r2) => (stop2 = r2));
-  setTimeout(() => stop2(), 50);
+  stopAfterEvents(stop2);
   const h = await cli(['tail'], { routes, WebSocket: FakeWS, interrupted: int2 });
   assert.match(h.stdout, /message\.received\s+Alice <alice@example\.com>\s+Hello\s+msg_evt_1/);
   assert.match(h.stderr, /listening/);
@@ -551,7 +566,7 @@ test('tail: escape sequences in the sender and subject are shown as text', async
   FakeWS.message = { from: `Eve${ESC}]0;pwned${BEL} <eve@example.com>`, subject: `Hi${ESC}]52;c;ZWNobyBwd24=${BEL}` };
   let stop;
   const interrupted = new Promise((r) => (stop = r));
-  setTimeout(() => stop(), 50);
+  stopAfterEvents(stop);
   const routes = { 'POST /v1/stream/token': () => [201, { token: 'st_1', expires_at: '', url: 'ws://api.test/v1/stream?token=st_1' }] };
   try {
     const r = await cli(['tail'], { routes, WebSocket: FakeWS, interrupted });
