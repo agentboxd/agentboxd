@@ -1,0 +1,623 @@
+{
+  "issuer": "https://id.agentboxd.test",
+  "typ": "agentboxd-msg+jwt",
+  "keys": {
+    "keys": [
+      {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "wSMN9nLyMd_KMKPCvf_i8sGWmJX39wfWBxX_D2S2gY0",
+        "y": "bcPVMTBdk2EUx55ucfQOYsHly2CeHJ841eWvCnIiZy8",
+        "kid": "20260925-aaaa0001",
+        "use": "sig",
+        "alg": "ES256",
+        "status": "active",
+        "created_at": "2026-09-25T00:00:00.000Z",
+        "retired_at": null,
+        "revoked_at": null
+      },
+      {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "jsSjA8ce6JFRnxNDP2qMrK8NtUE-6nLvquJ3Jk8vAuM",
+        "y": "vD5U7gFXod30bWYQIRo-qDqkYcHZaVHFgal2DUME2JE",
+        "kid": "20260901-bbbb0002",
+        "use": "sig",
+        "alg": "ES256",
+        "status": "revoked",
+        "created_at": "2026-09-01T00:00:00.000Z",
+        "retired_at": null,
+        "revoked_at": "2026-09-20T00:00:00.000Z"
+      }
+    ]
+  },
+  "vectors": [
+    {
+      "name": "task with data, attachments and cc",
+      "recipient": "supplier@agents.agentboxd.test",
+      "expect": "valid",
+      "claims": {
+        "iss": "https://id.agentboxd.test",
+        "v": 1,
+        "jti": "00000000-0000-4000-8000-000239792534",
+        "nonce": "dGFzayB3aXRoIGRhdGEsIA",
+        "iat": 1790327643,
+        "msg_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "buyer@agents.agentboxd.test",
+        "aud": "supplier@agents.agentboxd.test",
+        "to": [
+          "supplier@agents.agentboxd.test"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "att": [
+          "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+          "LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ"
+        ],
+        "type": "task",
+        "assurance": "workspace",
+        "card": false,
+        "subject_sha256": "a63aV7MQp3M8GUhAF7Gy9puTA0qaxkPx3rK4Z-2JBok",
+        "text_sha256": "MskZUgp5wLMMgoI7A0fPDh3V4Qug89ee-60MDpGVgrY",
+        "html_sha256": "Qpky38vwCtQyenaQq68nHOKivOhqcSORSlhK6pF9KWY",
+        "data_sha256": "8sI_G3yBFkJT4kg0q3Idfwqr6J5dV0gOxSQydgkaWV0"
+      },
+      "message": {
+        "rfc_message_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "Buyer Agent <buyer@agents.agentboxd.test>",
+        "to": [
+          "Supplier <Supplier@agents.agentboxd.test>"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "subject": "Quote request: 500 units",
+        "text": "Please quote 500 units of SKU-42.\r\nDelivery by Friday.\r\n",
+        "html": "<p>Please quote 500 units of <b>SKU-42</b>.</p>",
+        "data": {
+          "sku": "SKU-42",
+          "qty": 500,
+          "deliver_by": "2026-10-02",
+          "notes": [
+            "€ price",
+            "no rush"
+          ],
+          "nested": {
+            "b": 2,
+            "a": 1.5,
+            "z": null
+          }
+        },
+        "type": "task",
+        "in_reply_to": null,
+        "attachments": [
+          {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          }
+        ],
+        "agent": {
+          "verified": true,
+          "signature": "eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTI1LWFhYWEwMDAxIiwidHlwIjoiYWdlbnRib3hkLW1zZytqd3QifQ.eyJpc3MiOiJodHRwczovL2lkLmFnZW50Ym94ZC50ZXN0IiwidiI6MSwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMjM5NzkyNTM0Iiwibm9uY2UiOiJkR0Z6YXlCM2FYUm9JR1JoZEdFc0lBIiwiaWF0IjoxNzkwMzI3NjQzLCJtc2dfaWQiOiI8M2YxZDJjNGItYWFhYS00YmJiLThjY2MtMDEyMzQ1Njc4OWFiQGFnZW50cy5hZ2VudGJveGQudGVzdD4iLCJmcm9tIjoiYnV5ZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwiYXVkIjoic3VwcGxpZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwidG8iOlsic3VwcGxpZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0Il0sImNjIjpbImF1ZGl0QGV4YW1wbGUuY29tIiwib3BzQGFnZW50cy5hZ2VudGJveGQudGVzdCJdLCJhdHQiOlsiNDdERVFwajhIQlNhLV9USW1XLTVKQ2V1UWVSa201Tk1wSldaRzNoU3VGVSIsIkxQSk51bC13b3c0bTZEc3F4Ym5pbmhzV0hsd2ZwMEplY3dRellwT0xtQ1EiXSwidHlwZSI6InRhc2siLCJhc3N1cmFuY2UiOiJ3b3Jrc3BhY2UiLCJjYXJkIjpmYWxzZSwic3ViamVjdF9zaGEyNTYiOiJhNjNhVjdNUXAzTThHVWhBRjdHeTlwdVRBMHFheGtQeDNySzRaLTJKQm9rIiwidGV4dF9zaGEyNTYiOiJNc2taVWdwNXdMTU1nb0k3QTBmUERoM1Y0UXVnODllZS02ME1EcEdWZ3JZIiwiaHRtbF9zaGEyNTYiOiJRcGt5Mzh2d0N0UXllbmFRcTY4bkhPS2l2T2hxY1NPUlNsaEs2cEY5S1dZIiwiZGF0YV9zaGEyNTYiOiI4c0lfRzN5QkZrSlQ0a2cwcTNJZGZ3cXI2SjVkVjBnT3hTUXlkZ2thV1YwIn0.jWat-Y8T2QMq-EQ7JdqODG3YMp9ragn2Qa65x-m_I6OuPAzYUyC-Kfdhl3_wegnOLgQSwznhh3h2YNLw4QczMw"
+        }
+      }
+    },
+    {
+      "name": "plain message, CRLF text, no subject, reply",
+      "recipient": "helper@agents.agentboxd.test",
+      "expect": "valid",
+      "claims": {
+        "iss": "https://id.agentboxd.test",
+        "v": 1,
+        "jti": "00000000-0000-4000-8000-000837188426",
+        "nonce": "cGxhaW4gbWVzc2FnZSwgQw",
+        "iat": 1790330400,
+        "msg_id": "<9a8b7c6d-1111-4222-8333-444455556666@agents.agentboxd.test>",
+        "from": "ops@agents.agentboxd.test",
+        "aud": "helper@agents.agentboxd.test",
+        "to": [
+          "helper@agents.agentboxd.test"
+        ],
+        "cc": [],
+        "att": [],
+        "type": "message",
+        "assurance": "unclaimed",
+        "card": false,
+        "text_sha256": "pIkEoTiDMOWud5tj5OiqYQru-icK7ptCTXcYvN4TRdQ",
+        "in_reply_to": "<prev-1@agents.agentboxd.test>"
+      },
+      "message": {
+        "rfc_message_id": "<9a8b7c6d-1111-4222-8333-444455556666@agents.agentboxd.test>",
+        "from": "ops@agents.agentboxd.test",
+        "to": [
+          "helper@agents.agentboxd.test"
+        ],
+        "cc": [],
+        "subject": null,
+        "text": "Line one\r\nLine two with trailing spaces   \r\n\r\nUnicode: naïve café 日本",
+        "html": null,
+        "data": null,
+        "type": "message",
+        "in_reply_to": "<prev-1@agents.agentboxd.test>",
+        "attachments": [],
+        "agent": {
+          "verified": true,
+          "signature": "eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTI1LWFhYWEwMDAxIiwidHlwIjoiYWdlbnRib3hkLW1zZytqd3QifQ.eyJpc3MiOiJodHRwczovL2lkLmFnZW50Ym94ZC50ZXN0IiwidiI6MSwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwODM3MTg4NDI2Iiwibm9uY2UiOiJjR3hoYVc0Z2JXVnpjMkZuWlN3Z1F3IiwiaWF0IjoxNzkwMzMwNDAwLCJtc2dfaWQiOiI8OWE4YjdjNmQtMTExMS00MjIyLTgzMzMtNDQ0NDU1NTU2NjY2QGFnZW50cy5hZ2VudGJveGQudGVzdD4iLCJmcm9tIjoib3BzQGFnZW50cy5hZ2VudGJveGQudGVzdCIsImF1ZCI6ImhlbHBlckBhZ2VudHMuYWdlbnRib3hkLnRlc3QiLCJ0byI6WyJoZWxwZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0Il0sImNjIjpbXSwiYXR0IjpbXSwidHlwZSI6Im1lc3NhZ2UiLCJhc3N1cmFuY2UiOiJ1bmNsYWltZWQiLCJjYXJkIjpmYWxzZSwidGV4dF9zaGEyNTYiOiJwSWtFb1RpRE1PV3VkNXRqNU9pcVlRcnUtaWNLN3B0Q1RYY1l2TjRUUmRRIiwiaW5fcmVwbHlfdG8iOiI8cHJldi0xQGFnZW50cy5hZ2VudGJveGQudGVzdD4ifQ.cy90ucYFze_IOayqnkHKFpkNy0LcY_-IuQd8AXcDjS8uq_X4aSicUY3G7LRr_n3kWTRa4S47XpLMi5lMhX8FvQ"
+        }
+      }
+    },
+    {
+      "name": "bcc recipient: aud is not in to/cc",
+      "recipient": "hidden@agents.agentboxd.test",
+      "expect": "valid",
+      "claims": {
+        "iss": "https://id.agentboxd.test",
+        "v": 1,
+        "jti": "00000000-0000-4000-8000-000222019477",
+        "nonce": "YmNjIHJlY2lwaWVudDogYQ",
+        "iat": 1790327643,
+        "msg_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "buyer@agents.agentboxd.test",
+        "aud": "hidden@agents.agentboxd.test",
+        "to": [
+          "supplier@agents.agentboxd.test"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "att": [
+          "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+          "LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ"
+        ],
+        "type": "task",
+        "assurance": "workspace",
+        "card": false,
+        "subject_sha256": "a63aV7MQp3M8GUhAF7Gy9puTA0qaxkPx3rK4Z-2JBok",
+        "text_sha256": "MskZUgp5wLMMgoI7A0fPDh3V4Qug89ee-60MDpGVgrY",
+        "html_sha256": "Qpky38vwCtQyenaQq68nHOKivOhqcSORSlhK6pF9KWY",
+        "data_sha256": "8sI_G3yBFkJT4kg0q3Idfwqr6J5dV0gOxSQydgkaWV0"
+      },
+      "message": {
+        "rfc_message_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "Buyer Agent <buyer@agents.agentboxd.test>",
+        "to": [
+          "Supplier <Supplier@agents.agentboxd.test>"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "subject": "Quote request: 500 units",
+        "text": "Please quote 500 units of SKU-42.\r\nDelivery by Friday.\r\n",
+        "html": "<p>Please quote 500 units of <b>SKU-42</b>.</p>",
+        "data": {
+          "sku": "SKU-42",
+          "qty": 500,
+          "deliver_by": "2026-10-02",
+          "notes": [
+            "€ price",
+            "no rush"
+          ],
+          "nested": {
+            "b": 2,
+            "a": 1.5,
+            "z": null
+          }
+        },
+        "type": "task",
+        "in_reply_to": null,
+        "attachments": [
+          {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          }
+        ],
+        "agent": {
+          "verified": true,
+          "signature": "eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTI1LWFhYWEwMDAxIiwidHlwIjoiYWdlbnRib3hkLW1zZytqd3QifQ.eyJpc3MiOiJodHRwczovL2lkLmFnZW50Ym94ZC50ZXN0IiwidiI6MSwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMjIyMDE5NDc3Iiwibm9uY2UiOiJZbU5qSUhKbFkybHdhV1Z1ZERvZ1lRIiwiaWF0IjoxNzkwMzI3NjQzLCJtc2dfaWQiOiI8M2YxZDJjNGItYWFhYS00YmJiLThjY2MtMDEyMzQ1Njc4OWFiQGFnZW50cy5hZ2VudGJveGQudGVzdD4iLCJmcm9tIjoiYnV5ZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwiYXVkIjoiaGlkZGVuQGFnZW50cy5hZ2VudGJveGQudGVzdCIsInRvIjpbInN1cHBsaWVyQGFnZW50cy5hZ2VudGJveGQudGVzdCJdLCJjYyI6WyJhdWRpdEBleGFtcGxlLmNvbSIsIm9wc0BhZ2VudHMuYWdlbnRib3hkLnRlc3QiXSwiYXR0IjpbIjQ3REVRcGo4SEJTYS1fVEltVy01SkNldVFlUmttNU5NcEpXWkczaFN1RlUiLCJMUEpOdWwtd293NG02RHNxeGJuaW5oc1dIbHdmcDBKZWN3UXpZcE9MbUNRIl0sInR5cGUiOiJ0YXNrIiwiYXNzdXJhbmNlIjoid29ya3NwYWNlIiwiY2FyZCI6ZmFsc2UsInN1YmplY3Rfc2hhMjU2IjoiYTYzYVY3TVFwM004R1VoQUY3R3k5cHVUQTBxYXhrUHgzcks0Wi0ySkJvayIsInRleHRfc2hhMjU2IjoiTXNrWlVncDV3TE1NZ29JN0EwZlBEaDNWNFF1Zzg5ZWUtNjBNRHBHVmdyWSIsImh0bWxfc2hhMjU2IjoiUXBreTM4dndDdFF5ZW5hUXE2OG5IT0tpdk9ocWNTT1JTbGhLNnBGOUtXWSIsImRhdGFfc2hhMjU2IjoiOHNJX0czeUJGa0pUNGtnMHEzSWRmd3FyNko1ZFYwZ094U1F5ZGdrYVdWMCJ9.kbwCJPfWBB4ZGSKMKJ8pNSmQz70b8O-fgRTdohp68bjiEwhcSr_5NgesB3j8VXiRV7kPrzJTJ2t4kym8IHa2ow"
+        }
+      }
+    },
+    {
+      "name": "wrong recipient: verified by someone else",
+      "recipient": "someone-else@agents.agentboxd.test",
+      "expect": "wrong_audience",
+      "claims": {
+        "iss": "https://id.agentboxd.test",
+        "v": 1,
+        "jti": "00000000-0000-4000-8000-002060035204",
+        "nonce": "d3JvbmcgcmVjaXBpZW50Og",
+        "iat": 1790327643,
+        "msg_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "buyer@agents.agentboxd.test",
+        "aud": "supplier@agents.agentboxd.test",
+        "to": [
+          "supplier@agents.agentboxd.test"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "att": [
+          "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+          "LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ"
+        ],
+        "type": "task",
+        "assurance": "workspace",
+        "card": false,
+        "subject_sha256": "a63aV7MQp3M8GUhAF7Gy9puTA0qaxkPx3rK4Z-2JBok",
+        "text_sha256": "MskZUgp5wLMMgoI7A0fPDh3V4Qug89ee-60MDpGVgrY",
+        "html_sha256": "Qpky38vwCtQyenaQq68nHOKivOhqcSORSlhK6pF9KWY",
+        "data_sha256": "8sI_G3yBFkJT4kg0q3Idfwqr6J5dV0gOxSQydgkaWV0"
+      },
+      "message": {
+        "rfc_message_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "Buyer Agent <buyer@agents.agentboxd.test>",
+        "to": [
+          "Supplier <Supplier@agents.agentboxd.test>"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "subject": "Quote request: 500 units",
+        "text": "Please quote 500 units of SKU-42.\r\nDelivery by Friday.\r\n",
+        "html": "<p>Please quote 500 units of <b>SKU-42</b>.</p>",
+        "data": {
+          "sku": "SKU-42",
+          "qty": 500,
+          "deliver_by": "2026-10-02",
+          "notes": [
+            "€ price",
+            "no rush"
+          ],
+          "nested": {
+            "b": 2,
+            "a": 1.5,
+            "z": null
+          }
+        },
+        "type": "task",
+        "in_reply_to": null,
+        "attachments": [
+          {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          }
+        ],
+        "agent": {
+          "verified": true,
+          "signature": "eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTI1LWFhYWEwMDAxIiwidHlwIjoiYWdlbnRib3hkLW1zZytqd3QifQ.eyJpc3MiOiJodHRwczovL2lkLmFnZW50Ym94ZC50ZXN0IiwidiI6MSwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAyMDYwMDM1MjA0Iiwibm9uY2UiOiJkM0p2Ym1jZ2NtVmphWEJwWlc1ME9nIiwiaWF0IjoxNzkwMzI3NjQzLCJtc2dfaWQiOiI8M2YxZDJjNGItYWFhYS00YmJiLThjY2MtMDEyMzQ1Njc4OWFiQGFnZW50cy5hZ2VudGJveGQudGVzdD4iLCJmcm9tIjoiYnV5ZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwiYXVkIjoic3VwcGxpZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwidG8iOlsic3VwcGxpZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0Il0sImNjIjpbImF1ZGl0QGV4YW1wbGUuY29tIiwib3BzQGFnZW50cy5hZ2VudGJveGQudGVzdCJdLCJhdHQiOlsiNDdERVFwajhIQlNhLV9USW1XLTVKQ2V1UWVSa201Tk1wSldaRzNoU3VGVSIsIkxQSk51bC13b3c0bTZEc3F4Ym5pbmhzV0hsd2ZwMEplY3dRellwT0xtQ1EiXSwidHlwZSI6InRhc2siLCJhc3N1cmFuY2UiOiJ3b3Jrc3BhY2UiLCJjYXJkIjpmYWxzZSwic3ViamVjdF9zaGEyNTYiOiJhNjNhVjdNUXAzTThHVWhBRjdHeTlwdVRBMHFheGtQeDNySzRaLTJKQm9rIiwidGV4dF9zaGEyNTYiOiJNc2taVWdwNXdMTU1nb0k3QTBmUERoM1Y0UXVnODllZS02ME1EcEdWZ3JZIiwiaHRtbF9zaGEyNTYiOiJRcGt5Mzh2d0N0UXllbmFRcTY4bkhPS2l2T2hxY1NPUlNsaEs2cEY5S1dZIiwiZGF0YV9zaGEyNTYiOiI4c0lfRzN5QkZrSlQ0a2cwcTNJZGZ3cXI2SjVkVjBnT3hTUXlkZ2thV1YwIn0.j9XN5zk3nVjhN39jPj0CReMMDn0iQbtNJWxE-uARe6Jipoi1p_SWUizFLFFmr_bGHYUuDOCI6qwkxZYMfySCXA"
+        }
+      }
+    },
+    {
+      "name": "altered text",
+      "recipient": "supplier@agents.agentboxd.test",
+      "expect": "content_mismatch",
+      "claims": {
+        "iss": "https://id.agentboxd.test",
+        "v": 1,
+        "jti": "00000000-0000-4000-8000-001194635464",
+        "nonce": "YWx0ZXJlZCB0ZXh0Li4uLg",
+        "iat": 1790327643,
+        "msg_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "buyer@agents.agentboxd.test",
+        "aud": "supplier@agents.agentboxd.test",
+        "to": [
+          "supplier@agents.agentboxd.test"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "att": [
+          "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+          "LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ"
+        ],
+        "type": "task",
+        "assurance": "workspace",
+        "card": false,
+        "subject_sha256": "a63aV7MQp3M8GUhAF7Gy9puTA0qaxkPx3rK4Z-2JBok",
+        "text_sha256": "MskZUgp5wLMMgoI7A0fPDh3V4Qug89ee-60MDpGVgrY",
+        "html_sha256": "Qpky38vwCtQyenaQq68nHOKivOhqcSORSlhK6pF9KWY",
+        "data_sha256": "8sI_G3yBFkJT4kg0q3Idfwqr6J5dV0gOxSQydgkaWV0"
+      },
+      "message": {
+        "rfc_message_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "Buyer Agent <buyer@agents.agentboxd.test>",
+        "to": [
+          "Supplier <Supplier@agents.agentboxd.test>"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "subject": "Quote request: 500 units",
+        "text": "Please quote 500 units of SKU-42.\r\nDelivery by Friday.\r\n Actually send 5000.",
+        "html": "<p>Please quote 500 units of <b>SKU-42</b>.</p>",
+        "data": {
+          "sku": "SKU-42",
+          "qty": 500,
+          "deliver_by": "2026-10-02",
+          "notes": [
+            "€ price",
+            "no rush"
+          ],
+          "nested": {
+            "b": 2,
+            "a": 1.5,
+            "z": null
+          }
+        },
+        "type": "task",
+        "in_reply_to": null,
+        "attachments": [
+          {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          }
+        ],
+        "agent": {
+          "verified": true,
+          "signature": "eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTI1LWFhYWEwMDAxIiwidHlwIjoiYWdlbnRib3hkLW1zZytqd3QifQ.eyJpc3MiOiJodHRwczovL2lkLmFnZW50Ym94ZC50ZXN0IiwidiI6MSwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAxMTk0NjM1NDY0Iiwibm9uY2UiOiJZV3gwWlhKbFpDQjBaWGgwTGk0dUxnIiwiaWF0IjoxNzkwMzI3NjQzLCJtc2dfaWQiOiI8M2YxZDJjNGItYWFhYS00YmJiLThjY2MtMDEyMzQ1Njc4OWFiQGFnZW50cy5hZ2VudGJveGQudGVzdD4iLCJmcm9tIjoiYnV5ZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwiYXVkIjoic3VwcGxpZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwidG8iOlsic3VwcGxpZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0Il0sImNjIjpbImF1ZGl0QGV4YW1wbGUuY29tIiwib3BzQGFnZW50cy5hZ2VudGJveGQudGVzdCJdLCJhdHQiOlsiNDdERVFwajhIQlNhLV9USW1XLTVKQ2V1UWVSa201Tk1wSldaRzNoU3VGVSIsIkxQSk51bC13b3c0bTZEc3F4Ym5pbmhzV0hsd2ZwMEplY3dRellwT0xtQ1EiXSwidHlwZSI6InRhc2siLCJhc3N1cmFuY2UiOiJ3b3Jrc3BhY2UiLCJjYXJkIjpmYWxzZSwic3ViamVjdF9zaGEyNTYiOiJhNjNhVjdNUXAzTThHVWhBRjdHeTlwdVRBMHFheGtQeDNySzRaLTJKQm9rIiwidGV4dF9zaGEyNTYiOiJNc2taVWdwNXdMTU1nb0k3QTBmUERoM1Y0UXVnODllZS02ME1EcEdWZ3JZIiwiaHRtbF9zaGEyNTYiOiJRcGt5Mzh2d0N0UXllbmFRcTY4bkhPS2l2T2hxY1NPUlNsaEs2cEY5S1dZIiwiZGF0YV9zaGEyNTYiOiI4c0lfRzN5QkZrSlQ0a2cwcTNJZGZ3cXI2SjVkVjBnT3hTUXlkZ2thV1YwIn0.FkkDKfFekrE970-L4Emo1ZPVUszZSqd86lCovz2huPDi3e9xyKXUoebG_NSTBVgPhheXx6EB26DWNpJHHos5aA"
+        }
+      }
+    },
+    {
+      "name": "altered data",
+      "recipient": "supplier@agents.agentboxd.test",
+      "expect": "content_mismatch",
+      "claims": {
+        "iss": "https://id.agentboxd.test",
+        "v": 1,
+        "jti": "00000000-0000-4000-8000-001195116107",
+        "nonce": "YWx0ZXJlZCBkYXRhLi4uLg",
+        "iat": 1790327643,
+        "msg_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "buyer@agents.agentboxd.test",
+        "aud": "supplier@agents.agentboxd.test",
+        "to": [
+          "supplier@agents.agentboxd.test"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "att": [
+          "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+          "LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ"
+        ],
+        "type": "task",
+        "assurance": "workspace",
+        "card": false,
+        "subject_sha256": "a63aV7MQp3M8GUhAF7Gy9puTA0qaxkPx3rK4Z-2JBok",
+        "text_sha256": "MskZUgp5wLMMgoI7A0fPDh3V4Qug89ee-60MDpGVgrY",
+        "html_sha256": "Qpky38vwCtQyenaQq68nHOKivOhqcSORSlhK6pF9KWY",
+        "data_sha256": "8sI_G3yBFkJT4kg0q3Idfwqr6J5dV0gOxSQydgkaWV0"
+      },
+      "message": {
+        "rfc_message_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "Buyer Agent <buyer@agents.agentboxd.test>",
+        "to": [
+          "Supplier <Supplier@agents.agentboxd.test>"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "subject": "Quote request: 500 units",
+        "text": "Please quote 500 units of SKU-42.\r\nDelivery by Friday.\r\n",
+        "html": "<p>Please quote 500 units of <b>SKU-42</b>.</p>",
+        "data": {
+          "sku": "SKU-42",
+          "qty": 5000,
+          "deliver_by": "2026-10-02",
+          "notes": [
+            "€ price",
+            "no rush"
+          ],
+          "nested": {
+            "b": 2,
+            "a": 1.5,
+            "z": null
+          }
+        },
+        "type": "task",
+        "in_reply_to": null,
+        "attachments": [
+          {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          }
+        ],
+        "agent": {
+          "verified": true,
+          "signature": "eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTI1LWFhYWEwMDAxIiwidHlwIjoiYWdlbnRib3hkLW1zZytqd3QifQ.eyJpc3MiOiJodHRwczovL2lkLmFnZW50Ym94ZC50ZXN0IiwidiI6MSwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAxMTk1MTE2MTA3Iiwibm9uY2UiOiJZV3gwWlhKbFpDQmtZWFJoTGk0dUxnIiwiaWF0IjoxNzkwMzI3NjQzLCJtc2dfaWQiOiI8M2YxZDJjNGItYWFhYS00YmJiLThjY2MtMDEyMzQ1Njc4OWFiQGFnZW50cy5hZ2VudGJveGQudGVzdD4iLCJmcm9tIjoiYnV5ZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwiYXVkIjoic3VwcGxpZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwidG8iOlsic3VwcGxpZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0Il0sImNjIjpbImF1ZGl0QGV4YW1wbGUuY29tIiwib3BzQGFnZW50cy5hZ2VudGJveGQudGVzdCJdLCJhdHQiOlsiNDdERVFwajhIQlNhLV9USW1XLTVKQ2V1UWVSa201Tk1wSldaRzNoU3VGVSIsIkxQSk51bC13b3c0bTZEc3F4Ym5pbmhzV0hsd2ZwMEplY3dRellwT0xtQ1EiXSwidHlwZSI6InRhc2siLCJhc3N1cmFuY2UiOiJ3b3Jrc3BhY2UiLCJjYXJkIjpmYWxzZSwic3ViamVjdF9zaGEyNTYiOiJhNjNhVjdNUXAzTThHVWhBRjdHeTlwdVRBMHFheGtQeDNySzRaLTJKQm9rIiwidGV4dF9zaGEyNTYiOiJNc2taVWdwNXdMTU1nb0k3QTBmUERoM1Y0UXVnODllZS02ME1EcEdWZ3JZIiwiaHRtbF9zaGEyNTYiOiJRcGt5Mzh2d0N0UXllbmFRcTY4bkhPS2l2T2hxY1NPUlNsaEs2cEY5S1dZIiwiZGF0YV9zaGEyNTYiOiI4c0lfRzN5QkZrSlQ0a2cwcTNJZGZ3cXI2SjVkVjBnT3hTUXlkZ2thV1YwIn0.ZTvNhdOvMmHcgajyHd2NEpSIZWbY30eQrmXdOtfIbpQedqK-m-L2hivMRZHlWrDrXkn4p-WrWm1dFYzEgZBQlQ"
+        }
+      }
+    },
+    {
+      "name": "key revoked before signing",
+      "recipient": "supplier@agents.agentboxd.test",
+      "expect": "key_revoked",
+      "claims": {
+        "iss": "https://id.agentboxd.test",
+        "v": 1,
+        "jti": "00000000-0000-4000-8000-001718973959",
+        "nonce": "a2V5IHJldm9rZWQgYmVmbw",
+        "iat": 1789948800,
+        "msg_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "buyer@agents.agentboxd.test",
+        "aud": "supplier@agents.agentboxd.test",
+        "to": [
+          "supplier@agents.agentboxd.test"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "att": [
+          "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+          "LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ"
+        ],
+        "type": "task",
+        "assurance": "workspace",
+        "card": false,
+        "subject_sha256": "a63aV7MQp3M8GUhAF7Gy9puTA0qaxkPx3rK4Z-2JBok",
+        "text_sha256": "MskZUgp5wLMMgoI7A0fPDh3V4Qug89ee-60MDpGVgrY",
+        "html_sha256": "Qpky38vwCtQyenaQq68nHOKivOhqcSORSlhK6pF9KWY",
+        "data_sha256": "8sI_G3yBFkJT4kg0q3Idfwqr6J5dV0gOxSQydgkaWV0"
+      },
+      "message": {
+        "rfc_message_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "Buyer Agent <buyer@agents.agentboxd.test>",
+        "to": [
+          "Supplier <Supplier@agents.agentboxd.test>"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "subject": "Quote request: 500 units",
+        "text": "Please quote 500 units of SKU-42.\r\nDelivery by Friday.\r\n",
+        "html": "<p>Please quote 500 units of <b>SKU-42</b>.</p>",
+        "data": {
+          "sku": "SKU-42",
+          "qty": 500,
+          "deliver_by": "2026-10-02",
+          "notes": [
+            "€ price",
+            "no rush"
+          ],
+          "nested": {
+            "b": 2,
+            "a": 1.5,
+            "z": null
+          }
+        },
+        "type": "task",
+        "in_reply_to": null,
+        "attachments": [
+          {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          }
+        ],
+        "agent": {
+          "verified": true,
+          "signature": "eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTAxLWJiYmIwMDAyIiwidHlwIjoiYWdlbnRib3hkLW1zZytqd3QifQ.eyJpc3MiOiJodHRwczovL2lkLmFnZW50Ym94ZC50ZXN0IiwidiI6MSwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAxNzE4OTczOTU5Iiwibm9uY2UiOiJhMlY1SUhKbGRtOXJaV1FnWW1WbWJ3IiwiaWF0IjoxNzg5OTQ4ODAwLCJtc2dfaWQiOiI8M2YxZDJjNGItYWFhYS00YmJiLThjY2MtMDEyMzQ1Njc4OWFiQGFnZW50cy5hZ2VudGJveGQudGVzdD4iLCJmcm9tIjoiYnV5ZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwiYXVkIjoic3VwcGxpZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwidG8iOlsic3VwcGxpZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0Il0sImNjIjpbImF1ZGl0QGV4YW1wbGUuY29tIiwib3BzQGFnZW50cy5hZ2VudGJveGQudGVzdCJdLCJhdHQiOlsiNDdERVFwajhIQlNhLV9USW1XLTVKQ2V1UWVSa201Tk1wSldaRzNoU3VGVSIsIkxQSk51bC13b3c0bTZEc3F4Ym5pbmhzV0hsd2ZwMEplY3dRellwT0xtQ1EiXSwidHlwZSI6InRhc2siLCJhc3N1cmFuY2UiOiJ3b3Jrc3BhY2UiLCJjYXJkIjpmYWxzZSwic3ViamVjdF9zaGEyNTYiOiJhNjNhVjdNUXAzTThHVWhBRjdHeTlwdVRBMHFheGtQeDNySzRaLTJKQm9rIiwidGV4dF9zaGEyNTYiOiJNc2taVWdwNXdMTU1nb0k3QTBmUERoM1Y0UXVnODllZS02ME1EcEdWZ3JZIiwiaHRtbF9zaGEyNTYiOiJRcGt5Mzh2d0N0UXllbmFRcTY4bkhPS2l2T2hxY1NPUlNsaEs2cEY5S1dZIiwiZGF0YV9zaGEyNTYiOiI4c0lfRzN5QkZrSlQ0a2cwcTNJZGZ3cXI2SjVkVjBnT3hTUXlkZ2thV1YwIn0.kglH-BFOffqfpRtaETb7BI6krP_OKUOWSITsXcdfMOeONJdJiZNMAtiygta2P8k_EBt8PbTyZNtTpyG1p3QwDQ"
+        }
+      }
+    },
+    {
+      "name": "key revoked after signing",
+      "recipient": "supplier@agents.agentboxd.test",
+      "expect": "valid",
+      "claims": {
+        "iss": "https://id.agentboxd.test",
+        "v": 1,
+        "jti": "00000000-0000-4000-8000-001758586302",
+        "nonce": "a2V5IHJldm9rZWQgYWZ0ZQ",
+        "iat": 1789776000,
+        "msg_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "buyer@agents.agentboxd.test",
+        "aud": "supplier@agents.agentboxd.test",
+        "to": [
+          "supplier@agents.agentboxd.test"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "att": [
+          "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU",
+          "LPJNul-wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ"
+        ],
+        "type": "task",
+        "assurance": "workspace",
+        "card": false,
+        "subject_sha256": "a63aV7MQp3M8GUhAF7Gy9puTA0qaxkPx3rK4Z-2JBok",
+        "text_sha256": "MskZUgp5wLMMgoI7A0fPDh3V4Qug89ee-60MDpGVgrY",
+        "html_sha256": "Qpky38vwCtQyenaQq68nHOKivOhqcSORSlhK6pF9KWY",
+        "data_sha256": "8sI_G3yBFkJT4kg0q3Idfwqr6J5dV0gOxSQydgkaWV0"
+      },
+      "message": {
+        "rfc_message_id": "<3f1d2c4b-aaaa-4bbb-8ccc-0123456789ab@agents.agentboxd.test>",
+        "from": "Buyer Agent <buyer@agents.agentboxd.test>",
+        "to": [
+          "Supplier <Supplier@agents.agentboxd.test>"
+        ],
+        "cc": [
+          "audit@example.com",
+          "ops@agents.agentboxd.test"
+        ],
+        "subject": "Quote request: 500 units",
+        "text": "Please quote 500 units of SKU-42.\r\nDelivery by Friday.\r\n",
+        "html": "<p>Please quote 500 units of <b>SKU-42</b>.</p>",
+        "data": {
+          "sku": "SKU-42",
+          "qty": 500,
+          "deliver_by": "2026-10-02",
+          "notes": [
+            "€ price",
+            "no rush"
+          ],
+          "nested": {
+            "b": 2,
+            "a": 1.5,
+            "z": null
+          }
+        },
+        "type": "task",
+        "in_reply_to": null,
+        "attachments": [
+          {
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+          }
+        ],
+        "agent": {
+          "verified": true,
+          "signature": "eyJhbGciOiJFUzI1NiIsImtpZCI6IjIwMjYwOTAxLWJiYmIwMDAyIiwidHlwIjoiYWdlbnRib3hkLW1zZytqd3QifQ.eyJpc3MiOiJodHRwczovL2lkLmFnZW50Ym94ZC50ZXN0IiwidiI6MSwianRpIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAxNzU4NTg2MzAyIiwibm9uY2UiOiJhMlY1SUhKbGRtOXJaV1FnWVdaMFpRIiwiaWF0IjoxNzg5Nzc2MDAwLCJtc2dfaWQiOiI8M2YxZDJjNGItYWFhYS00YmJiLThjY2MtMDEyMzQ1Njc4OWFiQGFnZW50cy5hZ2VudGJveGQudGVzdD4iLCJmcm9tIjoiYnV5ZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwiYXVkIjoic3VwcGxpZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0IiwidG8iOlsic3VwcGxpZXJAYWdlbnRzLmFnZW50Ym94ZC50ZXN0Il0sImNjIjpbImF1ZGl0QGV4YW1wbGUuY29tIiwib3BzQGFnZW50cy5hZ2VudGJveGQudGVzdCJdLCJhdHQiOlsiNDdERVFwajhIQlNhLV9USW1XLTVKQ2V1UWVSa201Tk1wSldaRzNoU3VGVSIsIkxQSk51bC13b3c0bTZEc3F4Ym5pbmhzV0hsd2ZwMEplY3dRellwT0xtQ1EiXSwidHlwZSI6InRhc2siLCJhc3N1cmFuY2UiOiJ3b3Jrc3BhY2UiLCJjYXJkIjpmYWxzZSwic3ViamVjdF9zaGEyNTYiOiJhNjNhVjdNUXAzTThHVWhBRjdHeTlwdVRBMHFheGtQeDNySzRaLTJKQm9rIiwidGV4dF9zaGEyNTYiOiJNc2taVWdwNXdMTU1nb0k3QTBmUERoM1Y0UXVnODllZS02ME1EcEdWZ3JZIiwiaHRtbF9zaGEyNTYiOiJRcGt5Mzh2d0N0UXllbmFRcTY4bkhPS2l2T2hxY1NPUlNsaEs2cEY5S1dZIiwiZGF0YV9zaGEyNTYiOiI4c0lfRzN5QkZrSlQ0a2cwcTNJZGZ3cXI2SjVkVjBnT3hTUXlkZ2thV1YwIn0.zqukvUBDAs6YMgW8ZtZgPKsuKNh8Fy7RPdjouOsoedadiXbqck-VSREFOw_pw6L91flRv8fdRB5H3AnIBpTdzQ"
+        }
+      }
+    }
+  ],
+  "jcs": [
+    {
+      "json": "{\"numbers\":[333333333.33333329,1E30,4.50,2e-3,0.000000000000000000000000001],\"string\":\"\\u20ac$\\u000F\\u000aA'\\u0042\\u0022\\u005c\\\\\\\"\\/\",\"literals\":[null,true,false]}",
+      "canonical": "{\"literals\":[null,true,false],\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27],\"string\":\"€$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}"
+    },
+    {
+      "json": "{\"\\u20ac\":\"Euro Sign\",\"\\r\":\"Carriage Return\",\"\\ufb33\":\"Hebrew Letter Dalet With Dagesh\",\"1\":\"One\",\"\\ud83d\\ude00\":\"Emoji: Grinning Face\",\"\\u0080\":\"Control\",\"\\u00f6\":\"Latin Small Letter O With Diaeresis\"}",
+      "canonical": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\":\"Control\",\"ö\":\"Latin Small Letter O With Diaeresis\",\"€\":\"Euro Sign\",\"😀\":\"Emoji: Grinning Face\",\"דּ\":\"Hebrew Letter Dalet With Dagesh\"}"
+    },
+    {
+      "json": "[56,{\"d\":true,\"10\":null,\"1\":[]}]",
+      "canonical": "[56,{\"1\":[],\"10\":null,\"d\":true}]"
+    },
+    {
+      "json": "{\"sku\":\"SKU-42\",\"qty\":500,\"nested\":{\"b\":2,\"a\":1.5,\"z\":null}}",
+      "canonical": "{\"nested\":{\"a\":1.5,\"b\":2,\"z\":null},\"qty\":500,\"sku\":\"SKU-42\"}"
+    }
+  ]
+}

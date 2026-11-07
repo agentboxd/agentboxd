@@ -1,9 +1,20 @@
-# gitleaks config for the public repo (CI job "secrets"). Default rules; only documented placeholders are
-# allowlisted. The private monorepo's export scan (publish/export-public-repo.sh) runs before every release too.
+# gitleaks config for the public repo (CI job "secrets"). Default rules, with the private repo's reviewed allowances
+# for the exported paths: Markdown prose, test fixtures and documented placeholders. The private monorepo's export
+# scan (publish/export-public-repo.sh) runs before every release too.
 title = "agentboxd public"
 
 [extend]
 useDefault = true
+
+[[allowlists]]
+description = "generic-api-key matches prose in Markdown docs (e.g. 'the keys, `AGENTBOXD_API_KEY`')"
+targetRules = ["generic-api-key"]
+paths = ['''\.md$''']
+
+[[allowlists]]
+description = "Test fixtures: made-up tokens for the fake API in mcp/test, and the shared signature vectors (public keys, signatures)"
+targetRules = ["generic-api-key", "private-key", "jwt"]
+paths = ['''^test/''', '''^mcp/test/''']
 
 [[allowlists]]
 description = "Documented placeholders and test fixtures named as such"

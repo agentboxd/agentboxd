@@ -47,8 +47,10 @@ jobs:
       - run: npm pack --dry-run
 
   python:
-    runs-on: ubuntu-latest
+    # ubuntu-latest (26.04) has no Python 3.9 builds; 24.04 still has them.
+    runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.9", "3.13"]
     defaults:
@@ -81,7 +83,7 @@ jobs:
           docker run --rm -v "$PWD:/repo" \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
             ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
-            git /repo --config /repo/.gitleaks.toml --log-opts=--all --redact --no-banner
+            git /repo --config /repo/.gitleaks.toml --log-opts=--all --redact --verbose --no-banner --exit-code 1
 
   examples:
     runs-on: ubuntu-latest
@@ -91,8 +93,15 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      # sdk/src (typechecked with the examples) imports the SDK's own dependencies (jose, canonicalize).
+      - run: npm --prefix sdk ci
       - run: npm run typecheck:examples
       - run: npm run test:examples
+      # Own package.json and tsconfig each, as in their READMEs.
+      - name: Identity examples (Better Auth, Auth.js, headless relying party)
+        run: npm --prefix examples/identity ci && npm --prefix examples/identity run typecheck
+      - name: Agent messaging examples (two agents)
+        run: npm --prefix examples/asim ci && npm --prefix examples/asim run typecheck
 
   guide-examples:
     # examples/guides: the runnable copies of agentboxd.com/guides (own package.json and tsconfig).

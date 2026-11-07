@@ -12,5 +12,5 @@
     "noEmit": true
   },
   "include": ["examples", "sdk/src"],
-  "exclude": ["examples/guides"]
+  "exclude": ["examples/guides", "examples/identity", "examples/asim"]
 }
