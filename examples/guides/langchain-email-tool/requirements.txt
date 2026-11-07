@@ -1,5 +1,5 @@
 # agentboxd from this repository, so the guide runs against this code (users: pip install agentboxd).
 # Run pip from this folder.
 -e ../../../sdk-python
-langchain>=1.4.3,<2
+langchain>=1.4.8,<2
 langchain-openai>=1.6.7,<2
