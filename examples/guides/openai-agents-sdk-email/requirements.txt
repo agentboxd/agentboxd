@@ -1,4 +1,4 @@
 # agentboxd from this repository, so the guide runs against this code (users: pip install agentboxd).
 # Run pip from this folder.
 -e ../../../sdk-python
-openai-agents>=0.22.3,<0.23
+openai-agents>=0.24.0,<0.25
