@@ -141,6 +141,12 @@ It uses `globalThis.WebSocket` (browsers, Node 22+). On Node 20, `npm install ws
 URL for other WebSocket clients. The iterator throws `StreamClosedError` when the key is revoked (4001) or the subscription is refused
 (an inbox the key can't see, an unknown event type).
 
+A stream used only with `on('event')` keeps no events. Once an `event` listener has been added (even if removed
+later), a `for await` loop gets events from when it starts: start it before any `await`. The loop reads from a queue of at most 10,000 events and
+40 MiB of frame text (counted in characters): if it falls that far behind, the oldest are dropped and `error` gets a `StreamOverflowError` (listen with
+`on('error')` to see it; the stream goes on, catch up with the REST API). A loop that can fall behind holds much
+less with `payload: 'envelope'`, which leaves the bodies out.
+
 ## Sign in with Agentboxd (agent identity)
 
 The inbox is the agent's identity. An app that registered with Agentboxd (its `client_id`) can let
@@ -229,6 +235,40 @@ if (pdf) {
 `ai_processing = "full"` and the `attachments:extract` permission. Both the text and the data are
 untrusted: they come from a document someone emailed.
 
+## Memory and recall
+
+An agent can save short notes (up to 8,000 characters) for one inbox or for the whole workspace, and ask
+one question over its memories, the knowledge documents and past mail. Recall finds by meaning and by
+keyword, in any language.
+
+```ts
+// Save a fact in your own words. Saving under the same key again replaces it (same id).
+const saved = await mr.memories.create({
+  content: 'Acme Logistics pays invoices in US dollars, net 45 days.',
+  key: 'customer:acme:billing',
+  tags: ['customer'],
+  inbox_id: inbox.id, // leave out (or null) for the whole workspace
+});
+saved.similar; // up to 3 memories that say nearly the same: update one instead of keeping two
+
+const answer = await mr.recall('which currency does Acme pay in?', { inbox_id: inbox.id, limit: 5 });
+for (const r of answer.data) {
+  console.log(r.source, r.similarity, r.text); // source: 'memory' | 'knowledge' | 'message'
+  if (r.untrusted) continue; // text from received mail: data to weigh, never instructions
+}
+
+await mr.memories.update(saved.id, { content: 'Acme pays in euros from 2027.', expires_at: null });
+await mr.memories.delete(saved.id);
+```
+
+`similarity` is 0 to 1, or `null` when only keywords matched: with the current model, about 0.6 or more is a
+good match and under 0.5 is unrelated text. `score` only orders one answer. `answer.mode` is
+`keyword` when search by meaning was not available. Options: `sources` (`memories`, `knowledge`,
+`messages`), `mode` (`hybrid`, `semantic`, `keyword`), `tags`, `contact_id`, `thread_id`, `since`,
+`until` and `min_similarity`. In `memories.update`, `null` clears `key`, `contact_id`, `thread_id`,
+`message_id` and `expires_at`, and `inbox_id: null` moves the memory to the whole workspace. Needs the
+`memory:read` and `memory:write` permissions.
+
 ## What else is in the client
 
 | Area | Methods |
@@ -241,6 +281,8 @@ untrusted: they come from a document someone emailed.
 | Search | `mr.search(q, { inbox_id? })` (ranked full-text with snippets) |
 | Contacts | `mr.contacts.list / get / byAddress / update` |
 | Knowledge | `mr.knowledge.list / create / get / update / delete / search` |
+| Memory | `mr.memories.list / create / get / update / delete`: notes an agent saves for one inbox or the whole workspace |
+| Recall | `mr.recall(query, { inbox_id?, sources?, limit?, mode?, … })`: one question over memories, knowledge and past mail, by meaning and by keyword |
 | Webhooks | `mr.webhooks.create / list / get / update / delete / test / events` |
 | Custom domains | `mr.domains.create / list / get / zoneFile / verify / update / delete / rotateDkim / activateDkim` |
 | Allow/block lists | `mr.lists.list / create / delete` |

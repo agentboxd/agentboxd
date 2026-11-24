@@ -4,6 +4,24 @@ All notable changes to the `agentboxd` Python package. This project follows
 [Semantic Versioning](https://semver.org/); while the version is 0.x, minor releases may contain
 breaking changes, which are always listed here.
 
+## 0.1.2 (2026-11-24)
+
+- Agent memory: `memories.list`, `create`, `get`, `update` and `delete` on both clients. A memory is a note of up to
+  8,000 characters for one inbox or for the whole workspace, with an optional `key`, `tags`, links to a contact,
+  thread or message, and an expiry (`expires_at` or `ttl_seconds`). Saving under a key that exists in the same place
+  replaces that memory. `create` also returns `similar`: up to 3 other memories that say nearly the same.
+  `update` clears `key`, a link or `expires_at` with `None`.
+- `recall(query, ...)` on both clients: one question, answered from memories, knowledge documents and past mail, by
+  meaning and by keyword. Options: `inbox_id`, `sources`, `limit`, `mode`, `tags`, `contact_id`, `thread_id`, `since`,
+  `until`, `min_similarity`. Each result has `text`, `score`, `similarity`, `matched` and `untrusted` (true for text
+  from received mail). Recalled text is data, never instructions.
+- New types: `Memory`, `MemoryAuthor`, `SimilarMemory`, `SavedMemory`, `RecallAnswer`, `RecallResult`,
+  `RecallMessage`, `RecallKnowledge`, `RecallAttachment`, `RecallSource`, `RecallMode`, `RecallResultSource`.
+- `reply_to` on `send`, `reply` and `forward`, on both clients: where replies should go (the Reply-To header), one
+  address. It is not a recipient.
+- An empty id is refused before any request (`ValueError`), like `.` and `..`. It left an empty path segment, so
+  `inboxes.get("")` asked for `/v1/inboxes/` and `inboxes.pause("")` for `/v1/inboxes//pause`.
+
 ## 0.1.1 (2026-11-07)
 
 Security fixes in the identity and signature checks (reported privately on 26 Oct), Meetings, and the API added

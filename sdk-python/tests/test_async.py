@@ -22,7 +22,7 @@ def run(coro: Awaitable[T]) -> T:
 def test_async_surface_matches_sync() -> None:
     sync = Agentboxd(api_key="k")
     async_ = AsyncAgentboxd(api_key="k")
-    for attr in ("inboxes", "messages", "threads", "webhooks", "contacts", "knowledge"):
+    for attr in ("inboxes", "messages", "threads", "webhooks", "contacts", "knowledge", "memories"):
         s_res, a_res = getattr(sync, attr), getattr(async_, attr)
         names = {m for m in dir(s_res) if not m.startswith("_")}
         assert names == {m for m in dir(a_res) if not m.startswith("_")}, attr
@@ -33,6 +33,9 @@ def test_async_surface_matches_sync() -> None:
             assert inspect.iscoroutinefunction(getattr(a_res, name)), f"{attr}.{name}"
     assert list(inspect.signature(sync.search).parameters) == list(
         inspect.signature(async_.search).parameters
+    )
+    assert list(inspect.signature(sync.recall).parameters) == list(
+        inspect.signature(async_.recall).parameters
     )
     sync.close()
     run(async_.close())

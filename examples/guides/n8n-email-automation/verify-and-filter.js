@@ -34,12 +34,25 @@ seen.handled = seen.handled || [];
 if (seen.handled.includes(m.id)) return [];
 seen.handled = [...seen.handled, m.id].slice(-500);
 
-// Spoofed senders: never auto-answer them.
-if (m.labels.includes('spf-fail') || m.labels.includes('dmarc-fail')) return [];
-// Auto-replies, bulk mail and bounces: answering them starts mail loops.
-const auto = String(m.headers['auto-submitted'] || 'no').toLowerCase();
-const precedence = String(m.headers['precedence'] || '').toLowerCase();
-if (auto !== 'no' || ['bulk', 'junk', 'list', 'auto_reply'].includes(precedence)) return [];
+// Mail that failed SPF or DMARC, looks like an attack, is spam or is an automatic reply: never auto-answer it.
+// A forged From on a domain without DMARC gets no fail label, so don't put the sender's words in the answer.
+const SKIP_LABELS = [
+  'spf-fail', 'dmarc-fail', 'ai:injection-risk', 'local:injection-risk', 'ai:phishing', 'ai:auto-reply', 'spam', 'local:spam',
+];
+if (m.labels.some((l) => SKIP_LABELS.includes(l))) return [];
+// A reply goes to the Reply-To when there is one, and SPF and DMARC never check that address. Answer only when it
+// is the From address itself, or a stranger could have this inbox write to anyone they name.
+const address = (s) => (/<([^<>]+)>\s*$/.exec(s)?.[1] ?? s).trim().toLowerCase();
+const from = address(m.from);
+if (m.reply_to && address(m.reply_to) !== from) return [];
+// Bounces, auto-replies, bulk mail and lists: answering them starts mail loops.
+if (/mailer-daemon|postmaster|no-?reply/.test(from)) return [];
+const header = (k) => [].concat(m.headers[k] ?? []).join(' ').toLowerCase();
+if (m.auto_reply || (header('auto-submitted') && header('auto-submitted') !== 'no')) return [];
+if (/bulk|list|junk|auto_reply/.test(header('precedence')) || header('list-id')) return [];
+// Only the first email of a conversation. This acknowledgement carries In-Reply-To, so two inboxes running this
+// workflow can't keep answering each other.
+if (m.in_reply_to || (m.references ?? []).length) return [];
 
 return [
   {

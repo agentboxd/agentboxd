@@ -136,9 +136,12 @@ def test_path_segments_are_escaped(client: Agentboxd, rec: Recorder) -> None:
 
 def test_dot_segment_ids_are_refused(client: Agentboxd, rec: Recorder) -> None:
     # URLs resolve "." and "..": /v1/inboxes/.. would reach /v1/ instead of an inbox.
-    for bad in (".", ".."):
+    # An empty id leaves /v1/inboxes/ (another route) or /v1/inboxes//pause.
+    for bad in (".", "..", ""):
         with pytest.raises(ValueError):
             client.inboxes.get(bad)
+        with pytest.raises(ValueError):
+            client.inboxes.pause(bad)
     assert rec.requests == []
 
 

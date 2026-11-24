@@ -3,14 +3,16 @@
  * of the same tools as the npm package. See docs/remote-mcp-contract.md §2 and §5.
  *
  * Per request: Host and Origin checks (DNS rebinding) → a Bearer header (else 401) → a declared body over the limit
- * gets 413 → per-grant rate limit for a token already known from an earlier exchange (429, no exchange) → the Bearer
- * access token is exchanged at the authorization server for a short-lived API token (the person's token never
- * reaches the API; else 401 or 503) → per-grant rate limit for a token that was not known → only then is the body
- * read and parsed; a JSON-RPC batch counts each of its messages against the limit → a fresh stateless MCP server whose
- * tools call the API with that token.
+ * gets 413 → a token not shaped like an access token gets 401 (no exchange) → per-grant rate limit for a token already
+ * known from an earlier exchange (429, no exchange) → for a token not known, the limit on failed exchanges from its
+ * network (429, no exchange) → the Bearer access token is exchanged at the authorization server for a short-lived API
+ * token (the person's token never reaches the API; else 401 or 503) → per-grant rate limit for a token that was not
+ * known → only then is the body read and parsed; a JSON-RPC batch counts each of its messages against the limit → a
+ * fresh stateless MCP server whose tools call the API with that token.
  */
 import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { isIPv6 } from 'node:net';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Agentboxd } from '../../sdk/src/index.js';
 import { ConfigError, positiveInt } from './config.js';
@@ -21,6 +23,15 @@ export const CONNECTOR_SCOPE = 'mcp';
 export const EXCHANGE_CLIENT_ID = 'agentboxd-mcp';
 const TOKEN_EXCHANGE_GRANT = 'urn:ietf:params:oauth:grant-type:token-exchange';
 const ACCESS_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:access_token';
+/** The prefix of the authorization server's access tokens (ACCESS_TOKEN_PREFIX in src/connectors/pure.ts). */
+export const ACCESS_TOKEN_PREFIX = 'abxmt_';
+
+/**
+ * Whether a Bearer token could be one of our access tokens: the prefix and at most 128 characters, the same check the
+ * exchange makes before any lookup (src/connectors/grants.ts). Anything else gets its 401 without an exchange.
+ */
+export const looksLikeAccessToken = (token: string) =>
+  token.startsWith(ACCESS_TOKEN_PREFIX) && token.length > ACCESS_TOKEN_PREFIX.length && token.length <= 128;
 
 export interface HostedConfig {
   /** Canonical resource URL (MCP_RESOURCE_URL), e.g. https://mcp.agentboxd.com/mcp. Its path is the MCP endpoint. */
@@ -35,6 +46,8 @@ export interface HostedConfig {
   allowedHosts: string[];
   maxBodyBytes: number;
   rateLimitPerMinute: number;
+  /** MCP_INVALID_TOKENS_PER_IP_MINUTE: failed token exchanges a network gets per minute before 429. */
+  invalidTokensPerIpMinute: number;
   port: number;
   host: string;
 }
@@ -76,6 +89,7 @@ export function loadHostedConfig(env: NodeJS.ProcessEnv = process.env): HostedCo
     allowedHosts,
     maxBodyBytes: positiveInt('MCP_MAX_BODY_BYTES', env.MCP_MAX_BODY_BYTES, DEFAULT_MAX_BODY_BYTES),
     rateLimitPerMinute: positiveInt('MCP_RATE_LIMIT_PER_MINUTE', env.MCP_RATE_LIMIT_PER_MINUTE, 120),
+    invalidTokensPerIpMinute: positiveInt('MCP_INVALID_TOKENS_PER_IP_MINUTE', env.MCP_INVALID_TOKENS_PER_IP_MINUTE, 600),
     port: positiveInt('MCP_HTTP_PORT', env.MCP_HTTP_PORT, 3334),
     host: env.MCP_HTTP_HOST?.trim() || '0.0.0.0',
   };
@@ -166,37 +180,69 @@ export function httpExchanger(cfg: HostedConfig, fetchFn: typeof fetch = fetch):
 
 // ---------- rate limit ----------
 
-/** Fixed one-minute windows per grant, in process (the API also limits per grant across replicas). */
+/**
+ * Fixed one-minute windows per key, in process: per grant (the API also limits per grant across replicas), and per
+ * network for failed token exchanges.
+ */
 export class GrantRateLimiter {
   private windows = new Map<string, { window: number; count: number }>();
   constructor(
     private readonly limit: number,
     private readonly now: () => number = Date.now,
+    /** The most keys kept within one window, the oldest dropped first. For networks, which anyone can add. */
+    private readonly maxKeys = Number.POSITIVE_INFINITY,
   ) {}
 
   /** Counts `n` requests (one, or the messages of a JSON-RPC batch). Seconds until the window resets when over the limit, else 0. */
-  take(grantId: string, n = 1): number {
+  take(key: string, n = 1): number {
     const window = Math.floor(this.now() / 60_000);
-    const w = this.windows.get(grantId);
+    const w = this.windows.get(key);
     const entry = w && w.window === window ? w : { window, count: 0 };
     entry.count += n;
-    this.windows.set(grantId, entry);
+    this.windows.set(key, entry);
     if (this.windows.size > 10_000) for (const [k, v] of this.windows) if (v.window !== window) this.windows.delete(k);
+    for (const k of this.windows.keys()) {
+      if (this.windows.size <= this.maxKeys) break;
+      if (k !== key) this.windows.delete(k);
+    }
     return entry.count > this.limit ? this.secondsToReset() : 0;
   }
 
   /**
    * Takes back one request that `take` let through in this window, because it ended before it was served (its token
-   * exchange failed). Nothing to take back once the window has changed.
+   * exchange failed), or because it shouldn't count after all (a network's exchange that succeeded). Nothing to take
+   * back once the window has changed.
    */
-  refund(grantId: string): void {
-    const w = this.windows.get(grantId);
+  refund(key: string): void {
+    const w = this.windows.get(key);
     if (w && w.window === Math.floor(this.now() / 60_000) && w.count > 0) w.count--;
   }
 
   private secondsToReset(): number {
     return 60 - (Math.floor(this.now() / 1000) % 60);
   }
+}
+
+/**
+ * The network a request comes from, for the limit on failed token exchanges: the first X-Forwarded-For entry, else
+ * the socket's address. In production Caddy sets that header to the address it sees and drops whatever the client
+ * sent (it trusts no proxy), and the mcp port listens on loopback only. An IPv6 address counts as its /64, which one
+ * subscriber usually holds whole.
+ */
+export function clientNetwork(xff: string | string[] | undefined, socketAddress: string | undefined): string {
+  const raw = Array.isArray(xff) ? xff[0] : xff;
+  const ip = (raw?.split(',')[0]?.trim() || socketAddress || 'unknown').replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, '').slice(0, 64);
+  if (!isIPv6(ip)) return ip;
+  const [head, tail] = ip.split('::') as [string, string | undefined];
+  const groups = (s: string | undefined) => (s ? s.split(':') : []);
+  const width = (gs: string[]) => gs.reduce((n, g) => n + (g.includes('.') ? 2 : 1), 0); // a trailing a.b.c.d is 2 groups
+  const h = groups(head);
+  const t = groups(tail);
+  const all = tail === undefined ? h : [...h, ...Array<string>(8 - width(h) - width(t)).fill('0'), ...t];
+  return `${all
+    .slice(0, 4)
+    .map((g) => parseInt(g, 16).toString(16))
+    .join(':')}::/64`;
 }
 
 /** How long a token is remembered when the exchange gave no lifetime, and the most it is ever remembered. */
@@ -302,6 +348,7 @@ export function createHostedHandler(cfg: HostedConfig, deps: HostedDeps = {}) {
   const log = deps.log ?? ((e) => process.stdout.write(`${JSON.stringify(e)}\n`));
   const now = deps.now ?? Date.now;
   const limiter = new GrantRateLimiter(cfg.rateLimitPerMinute, now);
+  const networks = new GrantRateLimiter(cfg.invalidTokensPerIpMinute, now, 10_000);
   const known = new KnownTokens(10_000, now);
   const endpoint = mcpPath(cfg);
   const prmPaths = new Set(['/.well-known/oauth-protected-resource', `/.well-known/oauth-protected-resource${endpoint}`]);
@@ -350,6 +397,12 @@ export function createHostedHandler(cfg: HostedConfig, deps: HostedDeps = {}) {
       return json(res, 401, { error: 'invalid_token', error_description: 'sign in to Agentboxd to use this MCP server' }, { 'WWW-Authenticate': wwwAuthenticate(cfg) });
     }
     if (declaresMoreThan(req, cfg.maxBodyBytes)) return json(res, 413, rpcError(-32000, new BodyTooLarge(cfg.maxBodyBytes).message));
+    const invalidToken = (description: string) =>
+      json(res, 401, { error: 'invalid_token', error_description: description }, {
+        'WWW-Authenticate': wwwAuthenticate(cfg, { code: 'invalid_token', description }),
+      });
+    // Not one of our access tokens at all: no exchange needed to say so.
+    if (!looksLikeAccessToken(bearer)) return invalidToken('the access token is invalid, expired or revoked');
 
     // The body is read only after the token is exchanged and the request counted against its connection's minute:
     // a made-up token gets its 401 with the body unread, and a body sent slowly can't keep a request past the limit.
@@ -368,18 +421,31 @@ export function createHostedHandler(cfg: HostedConfig, deps: HostedDeps = {}) {
       }
     }
 
+    // A token not known yet costs an exchange, made-up ones included (#295 A5). Each network gets a minute's allowance
+    // of failed exchanges: the request is counted before its exchange (so requests sent all at once can't pass the
+    // allowance) and taken back when the exchange succeeds or the AS is down. Past the allowance, tokens not known
+    // get 429 with no exchange until the minute ends; known tokens are never counted here.
+    const network = seen ? undefined : clientNetwork(req.headers['x-forwarded-for'], req.socket.remoteAddress);
+    if (network) {
+      const retryAfter = networks.take(network);
+      if (retryAfter) {
+        entry.limited = 'network';
+        return json(res, 429, rpcError(-32000, 'Too many invalid tokens from this network; try again shortly'), { 'Retry-After': String(retryAfter) });
+      }
+    }
+
     const exchanged = await exchange(bearer);
     if (!exchanged.ok) {
       if (seen) limiter.refund(seen.grantId);
       if (exchanged.kind === 'unavailable') {
+        if (network) networks.refund(network);
         entry.error = exchanged.description;
         return json(res, 503, rpcError(-32000, 'Agentboxd is temporarily unavailable; try again shortly'), { 'Retry-After': '5' });
       }
       known.forget(bearer);
-      return json(res, 401, { error: 'invalid_token', error_description: exchanged.description }, {
-        'WWW-Authenticate': wwwAuthenticate(cfg, { code: 'invalid_token', description: exchanged.description }),
-      });
+      return invalidToken(exchanged.description);
     }
+    if (network) networks.refund(network);
     entry.grant = exchanged.grantId;
     entry.client = exchanged.clientId;
     known.remember(bearer, exchanged.grantId, exchanged.clientId, exchanged.expiresIn);

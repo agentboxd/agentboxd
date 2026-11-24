@@ -1,6 +1,6 @@
 {
   "name": "@agentboxd/mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "MCP server for Agentboxd: give Claude, Cursor or any MCP client real email inboxes. Send, reply, wait for mail, read OTP codes and magic links.",
   "mcpName": "com.agentboxd/mcp",
   "keywords": [

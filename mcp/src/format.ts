@@ -14,6 +14,9 @@ import {
   type Message,
   type MessageAnalysis,
   type MessageScreening,
+  type RecallAnswer,
+  type RecallMode,
+  type SavedMemory,
   type ThreadWithMessages,
   type VerificationResult,
 } from '../../sdk/src/index.js';
@@ -510,6 +513,38 @@ export function formatContact(c: Contact | ContactWithThreads) {
           })),
         }
       : {}),
+  };
+}
+
+// ---------- agent memory and recall ----------
+
+/** remember: the saved memory and its near-copies. Their text may have been written from an email (callers add the marker). */
+export function formatSavedMemory(saved: SavedMemory) {
+  return {
+    ...saved,
+    ...(saved.similar.length
+      ? { note: 'Other memories say nearly the same (similar). Keep one: update the existing memory with update_memory, then forget this new one.' }
+      : {}),
+  };
+}
+
+/**
+ * recall: the results in ranked order. A memory result's `text` is the memory itself, so its `memory` block carries
+ * the rest (id, key, tags, links) without the text a second time. `asked` is the mode the call asked for. Passages of
+ * mail are untrusted (callers add the marker).
+ */
+export function formatRecall(answer: RecallAnswer, asked?: RecallMode) {
+  return {
+    mode: answer.mode,
+    sources: answer.sources,
+    ...(answer.mode === 'keyword' && asked !== 'keyword'
+      ? { note: 'Search by meaning was not available: these results were found by keyword only, so a paraphrase may be missing.' }
+      : {}),
+    results: answer.data.map(({ memory, ...result }) => {
+      if (!memory) return result;
+      const { content: _sameAsText, ...rest } = memory;
+      return { ...result, memory: rest };
+    }),
   };
 }
 

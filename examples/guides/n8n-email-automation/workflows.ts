@@ -57,8 +57,9 @@ export function inboundWorkflow(code: string) {
         headerParameters: { parameters: [{ name: 'Idempotency-Key', value: '=ack-{{ $json.message_id }}' }] },
         sendBody: true,
         specifyBody: 'json',
+        // A fixed text: the sender's subject or words in it would let anyone send their text from this inbox.
         jsonBody:
-          '={{ JSON.stringify({ text: \'Hi,\\n\\nThanks for your email about "\' + $json.subject + \'". We have it and will answer within one business day.\\n\\nAcme Support\' }) }}',
+          "={{ JSON.stringify({ text: 'Hi,\\n\\nThanks for your email. We have it and will answer within one business day.\\n\\nAcme Support' }) }}",
         options: {},
       },
       id: '6f1d2c3a-1b4e-4d8a-9c10-2a3b4c5d6e03',

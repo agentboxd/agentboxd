@@ -7,6 +7,10 @@
  *   const s = mr.stream({ inboxIds: [inbox.id] });
  *   s.on('event', (e) => …);  s.on('error', (err) => …);  …  s.close();
  *
+ * Events wait in a queue for the `for await` loop (at most 10,000 events and 40 MiB of frames; past that the oldest
+ * are dropped and `error` gets a StreamOverflowError). A stream with an `on('event')` listener queues only for a loop
+ * that has started: with a listener attached, a loop gets events from when it starts.
+ *
  * Works with `globalThis.WebSocket` (browsers, Node 22+), the `ws` package (Node 20; install it), or
  * any constructor passed as `WebSocket`. Every connection uses a single-use token from
  * POST /v1/stream/token, so the API key never appears in a URL and no custom headers are needed.
@@ -58,13 +62,33 @@ export class StreamClosedError extends Error {
   }
 }
 
+/**
+ * The `for await` loop fell behind: more than `limit` events or `byteLimit` bytes of frames were waiting, so the oldest
+ * are being dropped. The stream goes on; resync with the REST API (e.g. list recent messages). Emitted once each time
+ * the queue fills up.
+ */
+export class StreamOverflowError extends Error {
+  constructor(
+    readonly limit: number,
+    readonly byteLimit: number,
+  ) {
+    super(
+      `stream: the for-await loop fell behind (more than ${limit} events or ${byteLimit / 2 ** 20} MiB waiting); dropping the oldest (resync with the REST API)`,
+    );
+    this.name = 'StreamOverflowError';
+  }
+}
+
 type Listener<T> = (arg: T) => void;
 interface StreamEvents {
   event: StreamEvent;
   open: void;
   /** After each (re)subscribe: `replayed` events were resent; `truncated` means some may be missing (resync via the REST API). */
   subscribed: { replayed: number; truncated: boolean };
-  /** A refused subscription or token request (the stream ends), or a failed reconnect attempt or server error (it retries). */
+  /**
+   * A refused subscription or token request (the stream ends), a failed reconnect attempt or server error (it
+   * retries), or a `StreamOverflowError`: the `for await` loop fell too far behind and events were dropped (it goes on).
+   */
   error: Error;
   /** A connection closed; `willReconnect` tells whether another one follows. */
   close: { code: number; reason: string; willReconnect: boolean };
@@ -74,6 +98,13 @@ const FATAL = new Set([4001, 4003, 1009]);
 /** `error` frame codes that refuse our own subscription or frame: the stream ends. Any other code reconnects. */
 const REFUSALS = new Set(['invalid_json', 'invalid_message', 'invalid_subscription', 'inbox_not_found', 'rate_limited']);
 const MAX_BACKOFF_MS = 30_000;
+/**
+ * What may wait for a `for await` loop; past either bound the oldest events are dropped. Room for about ten full
+ * replays at the server's default limits (1,000 events and 4 MiB of payloads each). Live events have no size limit,
+ * so the frames' length counts too (in characters: bytes for ASCII JSON).
+ */
+const MAX_QUEUED_EVENTS = 10_000;
+const MAX_QUEUED_BYTES = 40 * 2 ** 20;
 
 async function resolveWebSocket(given?: WebSocketConstructor): Promise<WebSocketConstructor> {
   if (given) return given;
@@ -102,7 +133,15 @@ export class EventStream implements AsyncIterable<StreamEvent> {
   private lastSeen = Date.now();
   private heartbeatMs = 30_000;
   private readonly listeners = new Map<keyof StreamEvents, Set<Listener<never>>>();
-  private readonly queue: StreamEvent[] = [];
+  /**
+   * Events for the `for await` loop, with their frame's length. Only the loop reads it: once an `event` listener has
+   * been added, nothing goes in until a loop asks.
+   */
+  private readonly queue: { event: StreamEvent; size: number }[] = [];
+  private queuedBytes = 0;
+  private iterated = false;
+  private listened = false;
+  private overflowing = false;
   private readonly waiting: { resolve: (r: IteratorResult<StreamEvent>) => void; reject: (e: Error) => void }[] = [];
 
   constructor(
@@ -116,6 +155,11 @@ export class EventStream implements AsyncIterable<StreamEvent> {
   on<K extends keyof StreamEvents>(type: K, listener: Listener<StreamEvents[K]>): this {
     if (!this.listeners.has(type)) this.listeners.set(type, new Set());
     this.listeners.get(type)!.add(listener as Listener<never>);
+    if (type === 'event' && !this.listened) {
+      this.listened = true;
+      // Kept for a loop that would start later; with a listener, a loop gets events from when it starts.
+      if (!this.iterated) this.dropQueue();
+    }
     return this;
   }
 
@@ -184,13 +228,14 @@ export class EventStream implements AsyncIterable<StreamEvent> {
     };
     ws.onmessage = (ev) => {
       this.lastSeen = Date.now();
+      const text = typeof ev.data === 'string' ? ev.data : String(ev.data);
       let msg: { type?: string; [k: string]: unknown };
       try {
-        msg = JSON.parse(typeof ev.data === 'string' ? ev.data : String(ev.data)) as typeof msg;
+        msg = JSON.parse(text) as typeof msg;
       } catch {
         return;
       }
-      this.handle(ws, msg);
+      this.handle(ws, msg, text.length);
     };
     ws.onclose = (ev) => {
       if (this.ws === ws) this.ws = undefined;
@@ -204,7 +249,7 @@ export class EventStream implements AsyncIterable<StreamEvent> {
     };
   }
 
-  private handle(ws: WebSocketLike, msg: { type?: string; [k: string]: unknown }) {
+  private handle(ws: WebSocketLike, msg: { type?: string; [k: string]: unknown }, size: number) {
     switch (msg.type) {
       case 'hello': {
         this.heartbeatMs = (Number(msg.heartbeat_seconds) || 30) * 1000;
@@ -236,7 +281,8 @@ export class EventStream implements AsyncIterable<StreamEvent> {
         this.emit('event', event);
         const w = this.waiting.shift();
         if (w) w.resolve({ value: event, done: false });
-        else this.queue.push(event);
+        else if (this.iterated || !this.listened) this.enqueue(event, size);
+        // else: listeners use this stream and no loop has started; they had it.
         return;
       }
       case 'error': {
@@ -262,6 +308,27 @@ export class EventStream implements AsyncIterable<StreamEvent> {
     }
   }
 
+  /** Keeps an event for a `for await` loop that hasn't asked for it yet (or hasn't started). */
+  private enqueue(event: StreamEvent, size: number) {
+    this.queue.push({ event, size });
+    this.queuedBytes += size;
+    let dropped = false;
+    // The newest event always stays, even one larger than the byte bound on its own.
+    while (this.queue.length > MAX_QUEUED_EVENTS || (this.queuedBytes > MAX_QUEUED_BYTES && this.queue.length > 1)) {
+      this.queuedBytes -= this.queue.shift()!.size;
+      dropped = true;
+    }
+    if (!dropped || this.overflowing) return;
+    this.overflowing = true;
+    this.emit('error', new StreamOverflowError(MAX_QUEUED_EVENTS, MAX_QUEUED_BYTES));
+  }
+
+  private dropQueue() {
+    this.queue.length = 0;
+    this.queuedBytes = 0;
+    this.overflowing = false;
+  }
+
   private scheduleReconnect() {
     if (this.closedByUser || this.finished) return;
     const base = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** this.attempt++);
@@ -270,10 +337,13 @@ export class EventStream implements AsyncIterable<StreamEvent> {
   }
 
   [Symbol.asyncIterator](): AsyncIterator<StreamEvent> {
+    this.iterated = true;
     return {
       next: () => {
-        const value = this.queue.shift();
-        if (value) return Promise.resolve({ value, done: false });
+        const item = this.queue.shift();
+        if (item) this.queuedBytes -= item.size;
+        if (this.queue.length === 0) this.overflowing = false;
+        if (item) return Promise.resolve({ value: item.event, done: false });
         if (this.finished) return this.failure ? Promise.reject(this.failure) : Promise.resolve({ value: undefined, done: true });
         return new Promise((resolve, reject) => this.waiting.push({ resolve, reject }));
       },

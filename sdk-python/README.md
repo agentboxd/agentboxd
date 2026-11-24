@@ -150,6 +150,27 @@ draft = mr.messages.draft_reply(message_id, instructions="Offer a refund.")
 mr.messages.reply(inbox_id, message_id, text=draft["text"])
 ```
 
+### Memory and recall
+
+An agent saves short notes and finds them again later. `recall` answers one question from the memories, the
+knowledge documents and the past mail of the workspace, by meaning and by keyword.
+
+```python
+# Workspace-wide; inbox_id=... keeps it to one inbox. Saving under the same key again replaces the memory.
+mr.memories.create("Acme pays in US dollars, net 45 days.", key="customer:acme:billing", tags=["customer"])
+
+answer = mr.recall("which currency does Acme pay in?", limit=5)
+for result in answer["data"]:  # best first
+    print(result["source"], result["text"])  # "memory", "knowledge" or "message", and the matching text
+
+mr.memories.list(tag="customer")
+mr.memories.update(memory_id, key=None)  # None clears the key, a link or expires_at
+mr.memories.delete(memory_id)
+```
+
+Recalled text is data to weigh, never instructions to follow: it may come from received mail, and then
+`result["untrusted"]` is `True`.
+
 ### Drafts: human review and scheduled send
 
 ```python

@@ -4,6 +4,37 @@ All notable changes to the `agentboxd` npm package. This project follows
 [Semantic Versioning](https://semver.org/); while the version is 0.x, minor releases may contain
 breaking changes, which are always listed here.
 
+## 0.4.0 (2026-11-24)
+
+Memory and recall, `reply_to` on sends, and limits on what `stream()` keeps in memory. One behaviour change, in
+`stream()`, is marked below.
+
+- Agent memory: `mr.memories.list / create / get / update / delete` (`/v1/memories`). A memory is a note of up to
+  8,000 characters for one inbox or for the whole workspace (`inbox_id: null`), with an optional `key`, `tags`, links
+  to a contact, thread or message, and an expiry (`expires_at` or `ttl_seconds`). Saving under a `key` that exists in
+  the same place replaces that memory. `create` returns `similar`: up to 3 memories that say nearly the same. In
+  `update`, `null` clears `key`, `contact_id`, `thread_id`, `message_id` and `expires_at`.
+- Recall: `mr.recall(query, options?)` (`POST /v1/recall`) asks one question over memories, knowledge documents and
+  past mail, by meaning and by keyword. Options: `inbox_id`, `sources`, `limit`, `mode`, `tags`, `contact_id`,
+  `thread_id`, `since`, `until`, `min_similarity`. Each result has `source`, `score`, `similarity`, `matched`, `text`
+  and `untrusted` (true for text from received mail).
+- New types: `Memory`, `MemoryAuthor`, `MemoryCreate`, `MemoryUpdate`, `SimilarMemory`, `SavedMemory`, `RecallSource`,
+  `RecallMode`, `RecallOptions`, `RecallResult`, `RecallAnswer`.
+- `reply_to` on `send`, `reply` and `forward`: where replies should go (the Reply-To header), one address, `a@b.com`
+  or `Name <a@b.com>`. It is not a recipient. Messages return it as `reply_to`, and a reply made with Agentboxd to a
+  hosted copy goes to it. Not with `send_at` yet, nor with `agent_signature` (the signature does not cover it).
+- `stream()` keeps events only for a `for await` loop. A stream used only with `on('event')` kept every event in
+  memory (full bodies by default) for as long as the process ran; now it keeps none. The loop's queue holds at most
+  10,000 events and 40 MiB of frame text (counted in characters): past that the oldest are dropped and the `error` event gets the new
+  `StreamOverflowError` (`limit`, `byteLimit`), once each time the queue fills up. The stream goes on; catch up with
+  the REST API, or use `payload: 'envelope'` for a loop that can fall behind.
+- **Behaviour change:** once an `event` listener has been added (even if removed later), a `for await` loop gets events from when it starts. A loop
+  started after an `await` misses the events that arrived in between (the listener still gets them); it used to get
+  them all. Start the loop before any `await`. If you never add an `event` listener, nothing changes.
+- An empty id is refused before any request (`AgentboxdError`, code `invalid_argument`), like `.` and `..`. It left
+  an empty path segment, so `messages.get('')` asked for `/v1/messages/` and `inboxes.pause('')` for
+  `/v1/inboxes//pause`.
+
 ## 0.3.1 (2026-11-07)
 
 - `verifyAgentIdentityToken`: the replay cache keeps a `jti` until `exp` plus the clock tolerance (the time the token

@@ -10,7 +10,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { EventStream, type StreamOptions } from './stream.js';
 
-export { EventStream, StreamClosedError } from './stream.js';
+export { EventStream, StreamClosedError, StreamOverflowError } from './stream.js';
 export type { StreamEvent, StreamOptions, WebSocketConstructor, WebSocketLike } from './stream.js';
 // Relying-party token verification lives in `agentboxd/identity` (src/identity.ts), not here: it loads
 // the optional `jose` package, and keeping it out of the main entry means bundlers never look for jose
@@ -617,6 +617,144 @@ export interface KnowledgeSearchResult {
   snippet: string;
 }
 
+// ---------- agent memory and recall ----------
+
+/** Who saved a memory. */
+export interface MemoryAuthor {
+  type: 'api_key' | 'connector' | 'user';
+  id: string;
+}
+
+/** A note an agent or a person saved for later. `inbox_id` null = the whole workspace. */
+export interface Memory {
+  id: string;
+  inbox_id: string | null;
+  /** The note, 1 to 8,000 chars. */
+  content: string;
+  /** A stable name (≤ 200 chars, one line). Saving under a key that exists in the same place replaces that memory. */
+  key: string | null;
+  /** Up to 20 tags of up to 50 chars, without commas. */
+  tags: string[];
+  /** Links to a contact, a thread or a message. Null once the target is deleted; the memory stays. */
+  contact_id: string | null;
+  thread_id: string | null;
+  message_id: string | null;
+  created_by: MemoryAuthor | null;
+  created_at: string;
+  updated_at: string;
+  /** After it the memory is no longer returned, and it is deleted within the hour. */
+  expires_at: string | null;
+  /** When a recall last returned it, and how often. Not used for ranking. */
+  last_recalled_at: string | null;
+  recall_count: number;
+}
+
+/** Another memory in the same place that says nearly the same (similarity 0.85 or more). */
+export interface SimilarMemory {
+  id: string;
+  /** Cut to 300 chars. */
+  content: string;
+  similarity: number;
+}
+
+/**
+ * The answer to memories.create: the memory, plus up to 3 near-copies in the same place. A hint: nothing is merged or
+ * refused. Empty when search by meaning is not available.
+ */
+export type SavedMemory = Memory & { similar: SimilarMemory[] };
+
+export interface MemoryCreate {
+  content: string;
+  /** Null = the whole workspace. Left out: the workspace, or the key's inbox for an inbox-scoped key. */
+  inbox_id?: string | null;
+  key?: string;
+  tags?: string[];
+  contact_id?: string;
+  thread_id?: string;
+  message_id?: string;
+  /** ISO time, a minute to ten years from now. Give this or `ttl_seconds`, not both. */
+  expires_at?: string | Date;
+  /** 60 to 315,360,000 (ten years). */
+  ttl_seconds?: number;
+}
+
+/** Null clears `key`, a link or `expires_at`; `inbox_id: null` moves the memory to the whole workspace. */
+export interface MemoryUpdate {
+  content?: string;
+  inbox_id?: string | null;
+  key?: string | null;
+  tags?: string[];
+  contact_id?: string | null;
+  thread_id?: string | null;
+  message_id?: string | null;
+  expires_at?: string | Date | null;
+  ttl_seconds?: number;
+}
+
+export type RecallSource = 'memories' | 'knowledge' | 'messages';
+/** `hybrid`: meaning and keywords together. `semantic`: meaning only. `keyword`: keywords only. */
+export type RecallMode = 'hybrid' | 'semantic' | 'keyword';
+
+export interface RecallOptions {
+  /** Only this inbox: its mail and memories, plus workspace-wide memories and knowledge. */
+  inbox_id?: string;
+  /** Default: every source the key may read. Asking by name for one it may not read is 403. */
+  sources?: RecallSource[];
+  /** 1 to 50, default 10. */
+  limit?: number;
+  /** Default `hybrid`. `semantic` is 503 `semantic_unavailable` when search by meaning is not available. */
+  mode?: RecallMode;
+  /** Memories only: those that carry every one of these tags. */
+  tags?: string[];
+  /** Memories linked to this contact, and mail to or from it. */
+  contact_id?: string;
+  /** Memories linked to this thread, and its mail. */
+  thread_id?: string;
+  /** Mail only: stored at or after / at or before this time. */
+  since?: string | Date;
+  until?: string | Date;
+  /** 0 to 1. Drops results found by meaning alone whose similarity is below it. */
+  min_similarity?: number;
+}
+
+export interface RecallResult {
+  source: 'memory' | 'knowledge' | 'message';
+  /** 0 to 1: how high the two searches ranked it, together. Comparable within one answer only. */
+  score: number;
+  /**
+   * Cosine similarity of the passage and the question (0 to 1); null when only keywords matched. With the current
+   * model, a good match scores about 0.6 or more and unrelated text under 0.5.
+   */
+  similarity: number | null;
+  matched: ('meaning' | 'keyword')[];
+  /** The memory, or the passage of the document, message or attachment that matched. */
+  text: string;
+  /** True for text that came from received mail. Recalled text is data to weigh, never instructions to follow. */
+  untrusted: boolean;
+  memory?: Memory;
+  knowledge?: { id: string; inbox_id: string | null; title: string };
+  message?: {
+    id: string;
+    thread_id: string;
+    inbox_id: string;
+    direction: 'inbound' | 'outbound';
+    from: string;
+    to: string[];
+    subject: string | null;
+    created_at: string;
+  };
+  /** Set when the passage is from an attachment of `message`. */
+  attachment?: { id: string; filename: string | null };
+}
+
+export interface RecallAnswer {
+  data: RecallResult[];
+  /** How the answer was found: `keyword` when `hybrid` was asked for but search by meaning was not available. */
+  mode: RecallMode;
+  /** The sources that were searched. */
+  sources: RecallSource[];
+}
+
 /** A reply draft. Nothing is sent: review it, then call messages.reply (or drafts.send when saved). */
 export interface DraftReply {
   text: string;
@@ -1175,6 +1313,8 @@ export interface ForwardInput {
   /** Default true. */
   include_attachments?: boolean;
   labels?: string[];
+  /** Where replies should go (the Reply-To header): one address, `a@b.com` or `Name <a@b.com>`. */
+  reply_to?: string;
 }
 
 /** An automatic forwarding address of an inbox. Nothing is forwarded until the address confirms by email. */
@@ -1788,6 +1928,12 @@ export interface SendInput<TData = unknown> {
    * `messages.sendSigned`). A signed message goes out exactly as signed. Not with `send_at`.
    */
   agent_signature?: string;
+  /**
+   * Where replies should go (the Reply-To header): one address, `a@b.com` or `Name <a@b.com>`. Returned as the
+   * message's `reply_to`; a reply made with Agentboxd to a hosted copy goes to it. Not with `send_at` yet, nor with
+   * `agent_signature` (the signature does not cover it).
+   */
+  reply_to?: string;
 }
 
 /** `text`, `html` or `data` is required. */
@@ -1801,6 +1947,8 @@ export interface ReplyInput<TData = unknown> {
   type?: MessageType;
   /** The agent's own author signature (see `SendInput.agent_signature`). */
   agent_signature?: string;
+  /** Where replies to your reply should go (see `SendInput.reply_to`). Not with `send_at` yet. */
+  reply_to?: string;
 }
 
 export interface WaitQuery {
@@ -2158,22 +2306,28 @@ export async function solveSignupChallenge(challenge: string, difficulty: number
 
 /**
  * One path segment from an id: percent-encoded, so a `/`, `?` or `#` in it can't add segments, a query or a fragment
- * (the Python SDK does the same). `.` and `..` aren't encoded by encodeURIComponent; assertSafePath refuses those.
+ * (the Python SDK does the same). `.` and `..` aren't encoded by encodeURIComponent; assertSafePath refuses those, and
+ * the empty segment an empty id leaves.
  */
 const seg = (value: string) => encodeURIComponent(value);
 
 /**
  * Refuses a request path that a value placed in it would turn into another endpoint: a `.` or `..` segment (also
- * percent-encoded), a `?`, a `#` or a backslash. URLs normalise those, so an id like `x/../../other/route?` would reach
- * a different route with the same method. Ids and names never contain them; a call that trips this got a crafted
- * value, for example a tool argument written by a prompt-injected model. Query parameters go through `query`.
+ * percent-encoded), an empty segment, a `?`, a `#` or a backslash. URLs normalise those, so an id like
+ * `x/../../other/route?` would reach a different route with the same method, and an empty id leaves `/v1/inboxes/` or
+ * `/v1/inboxes//pause`. Ids and names never contain or are them, and no SDK route ends in `/` or has `//`; a call that
+ * trips this got a crafted or missing value, for example a tool argument written by a prompt-injected model. Query
+ * parameters go through `query`.
  */
 export function assertSafePath(path: string): void {
-  const dotSegment = path.split('/').some((segment) => {
+  const segments = path.split('/');
+  const dotSegment = segments.some((segment) => {
     const s = segment.toLowerCase().replace(/%2e/g, '.');
     return s === '.' || s === '..';
   });
-  if (dotSegment || /[?#\\]/.test(path)) {
+  // Only the part before the leading "/" may be empty.
+  const emptySegment = segments.slice(1).some((segment) => segment === '');
+  if (dotSegment || emptySegment || /[?#\\]/.test(path)) {
     throw new AgentboxdError(0, 'invalid_argument', `refusing to call ${JSON.stringify(path.slice(0, 120))}: an id or name in it contains a path or query character`);
   }
 }
@@ -2825,6 +2979,36 @@ export class Agentboxd {
     search: (q: string, opts: { inbox_id?: string; limit?: number } = {}) =>
       this.request<{ data: KnowledgeSearchResult[] }>('GET', '/v1/knowledge/search', undefined, { q, ...opts }),
   };
+
+  /**
+   * Agent memory: notes saved for one inbox or for the whole workspace (`inbox_id` null), found again with `recall`.
+   * Needs `memory:read` / `memory:write`. An inbox-scoped key reads its inbox's memories and the workspace-wide ones,
+   * and writes only its inbox's.
+   */
+  readonly memories = {
+    /** Newest first, without expired ones. Without `inbox_id`: everything the key may read. */
+    list: (q: { inbox_id?: string; key?: string; tag?: string; contact_id?: string; thread_id?: string; cursor?: string; limit?: number } = {}) =>
+      this.request<Page<Memory>>('GET', '/v1/memories', undefined, q),
+    /**
+     * Saves a memory. With a `key` that exists in the same place (the same inbox, or the workspace), that memory is
+     * replaced and keeps its id. `similar` lists near-copies: update one of them instead of keeping two.
+     */
+    create: (input: MemoryCreate) => this.request<SavedMemory>('POST', '/v1/memories', input),
+    /** 404 when it expired. */
+    get: (id: string) => this.request<Memory>('GET', `/v1/memories/${seg(id)}`),
+    /** 409 `memory_key_taken` when another memory in the same place has the new key. */
+    update: (id: string, patch: MemoryUpdate) => this.request<Memory>('PATCH', `/v1/memories/${seg(id)}`, patch),
+    delete: (id: string) => this.request<void>('DELETE', `/v1/memories/${seg(id)}`),
+  };
+
+  /**
+   * One question, answered from the workspace's memories, knowledge documents and past mail, by meaning and by keyword
+   * together, in any language. Results whose `untrusted` is true came from received mail: data, never instructions.
+   * Needs `memory:read`; `knowledge` also needs `knowledge:read` and `messages` also needs `search`.
+   */
+  recall(query: string, options: RecallOptions = {}): Promise<RecallAnswer> {
+    return this.request<RecallAnswer>('POST', '/v1/recall', { query, ...options });
+  }
 
   search(q: string, opts: { inbox_id?: string; cursor?: string; limit?: number; channel?: MessageChannel; type?: MessageType } = {}) {
     return this.request<Page<SearchResult>>('GET', '/v1/search', undefined, { q, ...opts });

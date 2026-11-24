@@ -11,6 +11,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ConfigError } from '../src/config.js';
 import {
+  clientNetwork,
   createHostedHandler,
   describeRpc,
   exchangeEndpoint,
@@ -18,6 +19,7 @@ import {
   httpExchanger,
   KnownTokens,
   loadHostedConfig,
+  looksLikeAccessToken,
   protectedResourceMetadata,
   resourceMetadataUrl,
   wwwAuthenticate,
@@ -124,10 +126,21 @@ describe('the 401 challenge', () => {
     expect(res.headers.get('www-authenticate')).toMatch(/^Bearer error="invalid_token", error_description="[^"]+", resource_metadata="[^"]+", scope="mcp"$/);
   });
 
+  it('a token not shaped like an access token gets its 401 without an exchange', async () => {
+    for (const token of ['zzz', 'abxmt_', 'abxmr_refresh-token', `abxmt_${'x'.repeat(123)}`]) {
+      const res = await post(init, { Authorization: `Bearer ${token}` });
+      expect(res.status).toBe(401);
+      expect(res.headers.get('www-authenticate')).toMatch(/^Bearer error="invalid_token", error_description="the access token is invalid, expired or revoked"/);
+    }
+    expect(exchanged).toEqual([]);
+    expect(looksLikeAccessToken(ACCESS_TOKEN)).toBe(true);
+    expect(looksLikeAccessToken(`abxmt_${'x'.repeat(122)}`)).toBe(true); // 128 characters, the exchange's own limit
+  });
+
   it('a made-up token gets its 401 before the body is read or parsed', async () => {
-    const bad = await post('{nope', { Authorization: 'Bearer zzz' });
+    const bad = await post('{nope', { Authorization: 'Bearer abxmt_zzz' });
     expect(bad.status).toBe(401);
-    expect(exchanged).toEqual(['zzz']);
+    expect(exchanged).toEqual(['abxmt_zzz']);
     // A body within the limit that never arrives: the 401 comes without waiting for it.
     const status = await new Promise<number>((resolve, reject) => {
       const u = new URL(base);
@@ -389,6 +402,18 @@ describe('rate limit per grant', () => {
     expect(l.take('a')).toBe(0);
   });
 
+  it('keeps at most maxKeys keys in a window, dropping the oldest, never the one being counted', () => {
+    const t = 0;
+    const l = new GrantRateLimiter(1, () => t, 2);
+    expect(l.take('a')).toBe(0);
+    expect(l.take('a')).toBeGreaterThan(0);
+    expect(l.take('b')).toBe(0);
+    expect(l.take('c')).toBe(0); // three keys: 'a', the oldest, goes
+    expect(l.take('a')).toBe(0); // counted afresh, which drops 'b'
+    expect(l.take('c')).toBeGreaterThan(0);
+    expect(l.take('b')).toBe(0);
+  });
+
   describe('a connection past its allowance', () => {
     const LIMIT = 3;
     const TOKENS: Record<string, string> = { abxmt_a: 'grant-a', abxmt_a2: 'grant-a', abxmt_b: 'grant-b' };
@@ -576,6 +601,132 @@ describe('rate limit per grant', () => {
   });
 });
 
+describe('failed token exchanges per network (#295 A5)', () => {
+  it('clientNetwork: the first X-Forwarded-For entry, else the socket; IPv6 as its /64', () => {
+    // 192.0.2.x stands for our own reverse proxy: the public export refuses addresses outside the documentation ranges.
+    expect(clientNetwork('203.0.113.7', '192.0.2.1')).toBe('203.0.113.7');
+    expect(clientNetwork('203.0.113.7, 192.0.2.2', '192.0.2.1')).toBe('203.0.113.7');
+    expect(clientNetwork(['198.51.100.2', '203.0.113.7'], undefined)).toBe('198.51.100.2');
+    expect(clientNetwork(undefined, '::ffff:192.0.2.1')).toBe('192.0.2.1');
+    expect(clientNetwork('', undefined)).toBe('unknown');
+    expect(clientNetwork('2001:db8:1:2::1', undefined)).toBe('2001:db8:1:2::/64');
+    expect(clientNetwork('2001:0DB8:0001:0002:ffff:0:0:9', undefined)).toBe('2001:db8:1:2::/64');
+    expect(clientNetwork('2001:db8::1', undefined)).toBe('2001:db8:0:0::/64');
+    expect(clientNetwork('::1', undefined)).toBe('0:0:0:0::/64');
+    expect(clientNetwork('64:ff9b::192.0.2.1', undefined)).toBe('64:ff9b:0:0::/64');
+  });
+
+  describe('a network past its allowance', () => {
+    const LIMIT = 3;
+    const VALID = new Set(['abxmt_v1', 'abxmt_v2', 'abxmt_v3', 'abxmt_v4', 'abxmt_v5', 'abxmt_v6', 'abxmt_v7']);
+    let srv: Server;
+    let url: string;
+    let t = 2_000_000 * 60_000; // the start of a minute
+    let calls: string[] = [];
+    let revoked = new Set<string>();
+    let down = false;
+
+    beforeAll(async () => {
+      const ex: Exchanger = async (token) => {
+        calls.push(token);
+        if (down) return { ok: false, kind: 'unavailable', description: 'down' };
+        if (!VALID.has(token) || revoked.has(token)) return { ok: false, kind: 'invalid', description: 'the access token is invalid, expired or revoked' };
+        return { ok: true, token: API_KEY, grantId: `grant-${token}`, clientId: 'c', expiresIn: 300 };
+      };
+      srv = createServer();
+      await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+      url = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/mcp`;
+      const limited = loadHostedConfig({
+        MCP_RESOURCE_URL: url,
+        IDENTITY_ISSUER: 'https://id.agentboxd.test',
+        AGENTBOXD_INTERNAL_URL: fake.url,
+        CONNECTOR_EXCHANGE_SECRET: SECRET,
+        MCP_INVALID_TOKENS_PER_IP_MINUTE: String(LIMIT),
+      });
+      const handle = createHostedHandler(limited, { exchange: ex, log: (e) => logs.push(e), now: () => t });
+      srv.on('request', (req, res) => void handle(req, res));
+    });
+
+    afterAll(async () => {
+      await new Promise((r) => srv.close(r));
+    });
+
+    beforeEach(() => {
+      t += 60_000;
+      calls = [];
+      revoked = new Set();
+      down = false;
+    });
+
+    const send = async (token: string, from?: string) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          Authorization: `Bearer ${token}`,
+          ...(from ? { 'X-Forwarded-For': from } : {}),
+        },
+        body: JSON.stringify(init),
+      });
+      await res.text();
+      return res;
+    };
+
+    it('after its allowance of failed exchanges, a token not known gets 429 with no exchange; known tokens still work', async () => {
+      expect((await send('abxmt_v1')).status).toBe(200); // known from now on
+      for (let i = 0; i < LIMIT; i++) expect((await send(`abxmt_bad${i}`)).status).toBe(401);
+      const refused = await send('abxmt_bad9');
+      expect(refused.status).toBe(429);
+      expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(0);
+      expect(logs[logs.length - 1]).toMatchObject({ status: 429, limited: 'network' });
+      // A valid token not known yet is refused too: telling it apart would take the exchange.
+      expect((await send('abxmt_v2')).status).toBe(429);
+      expect((await send('abxmt_v1')).status).toBe(200);
+      expect(calls).toEqual(['abxmt_v1', 'abxmt_bad0', 'abxmt_bad1', 'abxmt_bad2', 'abxmt_v1']);
+      // The next minute starts afresh.
+      t += 60_000;
+      expect((await send('abxmt_v2')).status).toBe(200);
+      expect((await send('abxmt_bad9')).status).toBe(401);
+    });
+
+    it('only failed exchanges count: neither successful ones nor the AS being down', async () => {
+      for (const token of ['abxmt_v1', 'abxmt_v2', 'abxmt_v3', 'abxmt_v4', 'abxmt_v5']) expect((await send(token)).status).toBe(200);
+      down = true;
+      for (let i = 0; i < LIMIT + 2; i++) expect((await send('abxmt_v6')).status).toBe(503);
+      down = false;
+      for (let i = 0; i < LIMIT; i++) expect((await send(`abxmt_bad${i}`)).status).toBe(401);
+      expect((await send('abxmt_bad9')).status).toBe(429);
+    });
+
+    it('a known token that turns out revoked is not counted (it is forgotten, so the next try is)', async () => {
+      expect((await send('abxmt_v7')).status).toBe(200);
+      revoked.add('abxmt_v7');
+      expect((await send('abxmt_v7')).status).toBe(401); // known: not counted
+      expect((await send('abxmt_v7')).status).toBe(401); // forgotten: 1 of LIMIT
+      for (let i = 1; i < LIMIT; i++) expect((await send(`abxmt_bad${i}`)).status).toBe(401);
+      expect((await send('abxmt_bad9')).status).toBe(429);
+    });
+
+    it('counts each network on its own: an IPv4 address, an IPv6 /64', async () => {
+      for (let i = 0; i < LIMIT; i++) expect((await send(`abxmt_bad${i}`, '203.0.113.7')).status).toBe(401);
+      expect((await send('abxmt_bad9', '203.0.113.7')).status).toBe(429);
+      expect((await send('abxmt_bad9', '203.0.113.8')).status).toBe(401);
+      expect((await send('abxmt_bad9')).status).toBe(401); // the test's own socket address
+      for (let i = 0; i < LIMIT; i++) expect((await send(`abxmt_bad${i}`, '2001:db8:1:2::1')).status).toBe(401);
+      expect((await send('abxmt_bad9', '2001:db8:1:2:ffff::9')).status).toBe(429);
+      expect((await send('abxmt_bad9', '2001:db8:1:3::1')).status).toBe(401);
+    });
+
+    it('requests sent all at once cannot pass the allowance: each is counted before its exchange', async () => {
+      const statuses = await Promise.all(Array.from({ length: 10 }, (_, i) => send(`abxmt_bad${i}`).then((r) => r.status)));
+      expect(statuses.filter((s) => s === 401)).toHaveLength(LIMIT);
+      expect(statuses.filter((s) => s === 429)).toHaveLength(10 - LIMIT);
+      expect(calls).toHaveLength(LIMIT);
+    });
+  });
+});
+
 describe('known tokens', () => {
   it('remembers a token for its exchange lifetime (at most 5 minutes), forgets on request, keeps the newest', () => {
     let t = 0;
@@ -652,6 +803,8 @@ describe('configuration', () => {
       allowedHosts: ['mcp.agentboxd.com'],
       port: 3334,
       rateLimitPerMinute: 120,
+      invalidTokensPerIpMinute: 600,
     });
+    expect(loadHostedConfig({ CONNECTOR_EXCHANGE_SECRET: SECRET, MCP_INVALID_TOKENS_PER_IP_MINUTE: '5' }).invalidTokensPerIpMinute).toBe(5);
   });
 });

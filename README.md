@@ -113,6 +113,8 @@ sdk/          TypeScript client (npm: agentboxd), zero runtime dependencies
 mcp/          MCP server (npm: @agentboxd/mcp); inlines the TypeScript client at build time
 sdk-python/   Python client (PyPI: agentboxd, coming soon)
 examples/     Example agents using the TypeScript client
+test/fixtures/agent-messages/
+              Signed-message test vectors made by the API server; both clients' tests check them
 ```
 
 The Agentboxd API server itself is not part of this repository.

@@ -20,3 +20,42 @@ paths = ['''^test/''', '''^mcp/test/''']
 description = "Documented placeholders and test fixtures named as such"
 regexTarget = "match"
 regexes = ['''(?i)(example|placeholder|your[-_]?(api[-_]?)?key|mr_test_key|whsec_test)''']
+
+# Agentboxd's own credentials, which no default rule knows. No path allowlist: a made-up value is allowlisted by its
+# exact text, never by its file.
+[[rules]]
+id = "agentboxd-api-key"
+description = "Agentboxd API key: mr_ and 40 letters or digits"
+regex = '''\bmr_[A-Za-z0-9]{40}\b'''
+keywords = ["mr_"]
+
+[[rules]]
+id = "agentboxd-token"
+description = "Agentboxd tokens: abxmt_ access, abxmr_ refresh, abxst_ service, abxat_ sign-in access tokens, abxcode_ codes"
+regex = '''\babx(?:mt|mr|st|at|code)_[A-Za-z0-9_-]{20,}'''
+keywords = ["abxmt_", "abxmr_", "abxst_", "abxat_", "abxcode_"]
+
+[[rules]]
+id = "agentboxd-client-secret"
+description = "Sign in with Agentboxd client secret: abxs_ and 48 letters or digits"
+regex = '''\babxs_[A-Za-z0-9]{48}\b'''
+keywords = ["abxs_"]
+
+[[rules]]
+id = "agentboxd-app-password"
+description = "IMAP app password: ap_ and 32 letters or digits"
+regex = '''\bap_[A-Za-z0-9]{32}\b'''
+keywords = ["ap_"]
+
+[[rules]]
+id = "agentboxd-webhook-secret"
+description = "Generated webhook signing secret: whsec_ and 40 letters or digits"
+regex = '''\bwhsec_[A-Za-z0-9]{40}\b'''
+keywords = ["whsec_"]
+
+[[allowlists]]
+description = "Made-up Agentboxd keys, tokens and secrets in tests, each by its exact value"
+targetRules = ["agentboxd-api-key", "agentboxd-token", "agentboxd-client-secret", "agentboxd-app-password", "agentboxd-webhook-secret"]
+regexes = [
+  '''^abxmt_person-access-token-000000000000000000000$''',  # mcp/test/hosted.test.ts
+]

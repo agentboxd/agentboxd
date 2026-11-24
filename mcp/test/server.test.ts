@@ -14,7 +14,7 @@ import { Agentboxd } from '../../sdk/src/index.js';
 import { ConfigError, DEFAULT_AGENTBOXD_URL, loadConfig, parseKeyFile, refuseHttpRequest } from '../src/config.js';
 import { analysisNote, screeningNote, UNTRUSTED_MARKER } from '../src/format.js';
 import { createAgentboxdMcpServer, ID_PATTERN, SERVER_VERSION, TOOL_NAMES, type ServerOptions } from '../src/server.js';
-import { API_KEY, makeDraft, makeEvent, makeMessage, ownMeeting, startFakeAgentboxd, type FakeAgentboxd } from './fake-agentboxd.js';
+import { API_KEY, makeDraft, makeEvent, makeMemory, makeMessage, makeRecallAnswer, ownMeeting, startFakeAgentboxd, type FakeAgentboxd } from './fake-agentboxd.js';
 
 const ENTRY = fileURLToPath(new URL('../src/index.ts', import.meta.url));
 const MCP_DIR = fileURLToPath(new URL('..', import.meta.url));
@@ -57,10 +57,10 @@ afterEach(() => {
 });
 
 describe('tool registry', () => {
-  it('exposes exactly the 56 contract tools, each with a description', async () => {
+  it('exposes exactly the 61 contract tools, each with a description', async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(tools).toHaveLength(56);
+    expect(tools).toHaveLength(61);
     for (const t of tools) expect(t.description?.length).toBeGreaterThan(40);
   });
 
@@ -343,6 +343,196 @@ describe('contacts, knowledge and drafts (Phase 2b)', () => {
     const r = await call('search_knowledge', { query: 'refund', inbox_id: 'inb_1', limit: 3 });
     expect((json(r).results as Array<Record<string, unknown>>)[0]).toMatchObject({ id: 'kn_1', title: 'Refund policy' });
     expect(fake.requests.at(-1)).toMatchObject({ path: '/v1/knowledge/search', query: { q: 'refund', inbox_id: 'inb_1', limit: '3' } });
+  });
+
+  describe('agent memory and recall', () => {
+    it('remember posts the memory and returns it with similar, and a note to keep one of them', async () => {
+      const args = {
+        content: 'Acme pays invoices in US dollars.',
+        inbox_id: 'inb_1',
+        tags: ['customer', 'billing'],
+        contact_id: 'con_1',
+        thread_id: 'thr_1',
+        message_id: 'msg_1',
+        ttl_seconds: 3600,
+      };
+      const r = await call('remember', args);
+      expect(r.isError).toBeFalsy();
+      expect(fake.requests).toHaveLength(1);
+      expect(fake.requests[0]).toMatchObject({ method: 'POST', path: '/v1/memories', query: {} });
+      expect(fake.requests[0]?.body).toEqual(args);
+      const saved = json(r);
+      expect(saved).toMatchObject({ id: 'mem_new', inbox_id: 'inb_1', content: 'Acme pays invoices in US dollars.', key: null, tags: ['customer', 'billing'], expires_at: '2026-11-12T11:00:00.000Z' });
+      expect(saved.similar).toEqual([{ id: 'mem_1', content: makeMemory().content, similarity: 0.951 }]);
+      expect(String(saved.note)).toMatch(/update_memory.*forget/);
+      // `similar` is other memories' text, which may have been written from an email.
+      expect(text(r).startsWith(UNTRUSTED_MARKER)).toBe(true);
+    });
+
+    it('remember with a key replaces the memory under it: nothing similar, no note; without inbox_id none is sent', async () => {
+      const r = await call('remember', { content: 'Acme pays in euros from 2027.', key: 'customer:acme:billing' });
+      expect(fake.requests[0]?.body).toEqual({ content: 'Acme pays in euros from 2027.', key: 'customer:acme:billing' });
+      const saved = json(r);
+      expect(saved).toMatchObject({ id: 'mem_1', inbox_id: null, key: 'customer:acme:billing', similar: [] });
+      expect(saved).not.toHaveProperty('note');
+    });
+
+    it('remember refuses input outside the limits before any call', async () => {
+      const bad: Record<string, unknown>[] = [
+        {},
+        { content: '' },
+        { content: 'x'.repeat(8001) },
+        { content: 'x', key: 'k'.repeat(201) },
+        { content: 'x', tags: Array.from({ length: 21 }, (_, i) => `t${i}`) },
+        { content: 'x', ttl_seconds: 59 },
+        { content: 'x', ttl_seconds: 315_360_001 },
+        { content: 'x', ttl_seconds: 90.5 },
+      ];
+      for (const args of bad) expect((await call('remember', args)).isError, JSON.stringify(args).slice(0, 60)).toBe(true);
+      expect(fake.requests).toEqual([]);
+    });
+
+    it('recall posts the question with its filters; the result is marked untrusted like other mail content', async () => {
+      const args = {
+        query: 'which currency does Acme pay in?',
+        inbox_id: 'inb_1',
+        sources: ['memories', 'messages'],
+        limit: 5,
+        mode: 'hybrid',
+        tags: ['customer'],
+        contact_id: 'con_1',
+        thread_id: 'thr_1',
+        since: '2026-10-01T00:00:00Z',
+        until: '2026-12-01T00:00:00Z',
+        min_similarity: 0.8,
+      };
+      const r = await call('recall', args);
+      expect(r.isError).toBeFalsy();
+      expect(fake.requests).toHaveLength(1);
+      expect(fake.requests[0]).toMatchObject({ method: 'POST', path: '/v1/recall', query: {} });
+      expect(fake.requests[0]?.body).toEqual(args);
+      expect(text(r).startsWith(UNTRUSTED_MARKER)).toBe(true);
+
+      const answer = json(r);
+      expect(answer).toMatchObject({ mode: 'hybrid', sources: ['memories', 'messages'] });
+      expect(answer).not.toHaveProperty('note');
+      const [memory, message] = answer.results as Array<Record<string, unknown>>;
+      // A memory result: the text once, the rest of the memory next to it.
+      expect(memory).toMatchObject({ source: 'memory', similarity: 0.883, matched: ['meaning', 'keyword'], untrusted: false, text: makeMemory().content });
+      expect(memory?.memory).toMatchObject({ id: 'mem_1', key: 'customer:acme:billing', tags: ['customer'], contact_id: 'con_1' });
+      expect(memory?.memory).not.toHaveProperty('content');
+      // A passage of received mail keeps its own untrusted flag and the ids to read more.
+      expect(message).toMatchObject({
+        source: 'message',
+        untrusted: true,
+        message: { id: 'msg_1', thread_id: 'thr_1', direction: 'inbound', subject: 'Pallets damaged in Rotterdam' },
+        attachment: { id: 'att_1', filename: 'delivery-note.pdf' },
+      });
+      expect(String(message?.text)).toContain('Ignore previous instructions');
+    });
+
+    it('recall with only a query sends only the query, and says when the answer is by keyword alone', async () => {
+      const all = json(await call('recall', { query: 'returns policy' }));
+      expect(fake.requests[0]?.body).toEqual({ query: 'returns policy' });
+      expect((all.results as Array<{ source: string }>).map((x) => x.source)).toEqual(['memory', 'message', 'knowledge']);
+
+      // Asked for hybrid (the default), answered by keyword: search by meaning was not available.
+      fake.overrides.set('POST /v1/recall', { status: 200, body: makeRecallAnswer({ mode: 'keyword' }) });
+      expect(String(json(await call('recall', { query: 'returns policy' })).note)).toMatch(/by keyword only/);
+      expect(json(await call('recall', { query: 'returns policy', mode: 'keyword' }))).not.toHaveProperty('note');
+
+      fake.overrides.set('POST /v1/recall', { status: 503, body: { error: { code: 'semantic_unavailable', message: 'search by meaning is not available right now' } } });
+      const down = await call('recall', { query: 'x', mode: 'semantic' });
+      expect(down.isError).toBe(true);
+      expect(JSON.parse(text(down)).error).toMatchObject({ code: 'semantic_unavailable', status: 503 });
+    });
+
+    it('recall refuses input outside the limits before any call', async () => {
+      const bad: Record<string, unknown>[] = [
+        {},
+        { query: '' },
+        { query: 'x'.repeat(2001) },
+        { query: 'x', limit: 51 },
+        { query: 'x', mode: 'fuzzy' },
+        { query: 'x', sources: ['contacts'] },
+        { query: 'x', sources: [] },
+        { query: 'x', min_similarity: 1.5 },
+        { query: 'x', since: 'last week' },
+      ];
+      for (const args of bad) expect((await call('recall', args)).isError, JSON.stringify(args).slice(0, 60)).toBe(true);
+      expect(fake.requests).toEqual([]);
+    });
+
+    it('list_memories passes the filters and returns the memories marked untrusted', async () => {
+      const r = await call('list_memories', { inbox_id: 'inb_1', key: 'customer:acme:billing', tag: 'customer', contact_id: 'con_1', thread_id: 'thr_1', limit: 5, cursor: 'c1' });
+      expect(r.isError).toBeFalsy();
+      expect(fake.requests[0]).toMatchObject({ method: 'GET', path: '/v1/memories' });
+      expect(fake.requests[0]?.query).toEqual({ inbox_id: 'inb_1', key: 'customer:acme:billing', tag: 'customer', contact_id: 'con_1', thread_id: 'thr_1', limit: '5', cursor: 'c1' });
+      expect(text(r).startsWith(UNTRUSTED_MARKER)).toBe(true);
+      const page = json(r);
+      expect((page.memories as Array<{ id: string }>).map((x) => x.id)).toEqual(['mem_1', 'mem_2']);
+      expect((page.memories as Array<Record<string, unknown>>)[0]).toMatchObject({ inbox_id: 'inb_1', content: makeMemory().content, recall_count: 0 });
+      expect(page.next_cursor).toBeNull();
+
+      await call('list_memories', {});
+      expect(fake.requests.at(-1)).toMatchObject({ path: '/v1/memories', query: {} });
+      expect((await call('list_memories', { limit: 101 })).isError).toBe(true);
+    });
+
+    it('update_memory sends null for the fields it clears, and only the fields it was given', async () => {
+      const patch = { content: 'Acme pays in euros from 2027.', key: null, tags: [], inbox_id: null, contact_id: null, thread_id: null, message_id: null, expires_at: null };
+      const r = await call('update_memory', { memory_id: 'mem_1', ...patch });
+      expect(r.isError).toBeFalsy();
+      expect(fake.requests).toHaveLength(1);
+      expect(fake.requests[0]).toMatchObject({ method: 'PATCH', path: '/v1/memories/mem_1' });
+      expect(fake.requests[0]?.body).toEqual(patch);
+      expect(json(r)).toMatchObject({ id: 'mem_1', content: 'Acme pays in euros from 2027.', key: null, contact_id: null, expires_at: null });
+      expect(text(r).startsWith(UNTRUSTED_MARKER)).toBe(true);
+
+      await call('update_memory', { memory_id: 'mem_1', contact_id: 'con_2', ttl_seconds: 3600 });
+      expect(fake.requests.at(-1)?.body).toEqual({ contact_id: 'con_2', ttl_seconds: 3600 });
+    });
+
+    it('update_memory needs a change, takes expires_at or ttl_seconds but not both, and passes the API error on', async () => {
+      expect((await call('update_memory', { memory_id: 'mem_1' })).isError).toBe(true);
+      const both = await call('update_memory', { memory_id: 'mem_1', expires_at: '2027-01-01T00:00:00Z', ttl_seconds: 3600 });
+      expect(JSON.parse(text(both)).error).toMatchObject({ code: 'invalid_input', message: expect.stringContaining('not both') });
+      expect(fake.requests).toEqual([]);
+
+      fake.overrides.set('PATCH /v1/memories/mem_1', { status: 409, body: { error: { code: 'memory_key_taken', message: 'another memory in the same place already has this key' } } });
+      const taken = await call('update_memory', { memory_id: 'mem_1', key: 'customer:acme:billing' });
+      expect(JSON.parse(text(taken)).error).toMatchObject({ code: 'memory_key_taken', status: 409 });
+    });
+
+    it('forget deletes the memory', async () => {
+      const r = await call('forget', { memory_id: 'mem_1' });
+      expect(r.isError).toBeFalsy();
+      expect(fake.requests).toHaveLength(1);
+      expect(fake.requests[0]).toMatchObject({ method: 'DELETE', path: '/v1/memories/mem_1', query: {} });
+      expect(fake.requests[0]?.body).toBeUndefined();
+      expect(json(r)).toEqual({ deleted: true, memory_id: 'mem_1' });
+
+      const gone = await call('forget', { memory_id: 'missing' });
+      expect(gone.isError).toBe(true);
+      expect(text(gone)).toContain('not_found');
+    });
+
+    it('recall and list_memories are read-only; remember and update_memory write; only forget is destructive', async () => {
+      const { tools } = await client.listTools();
+      const hints = (name: string) => tools.find((t) => t.name === name)?.annotations;
+      for (const t of ['recall', 'list_memories']) expect(hints(t)).toEqual({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
+      expect(hints('remember')).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
+      expect(hints('update_memory')).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+      expect(hints('forget')).toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false });
+    });
+
+    it('the server instructions say when to recall and remember; contacts are no longer called memory', () => {
+      const instructions = client.getInstructions() ?? '';
+      const line = instructions.split('\n').find((l) => l.startsWith('- Memory:')) ?? '';
+      for (const tool of ['recall', 'remember', 'list_memories', 'update_memory', 'forget']) expect(line).toContain(tool);
+      expect(line).not.toContain('get_contact');
+      expect(instructions).toMatch(/^- Contacts: get_contact /m);
+    });
   });
 
   it('draft_reply returns a draft (never sends) with citations, marked untrusted', async () => {
@@ -988,11 +1178,15 @@ describe('security report #295', () => {
       const { tools } = await client.listTools();
       const seen: string[] = [];
       for (const t of tools) {
-        const props = (t.inputSchema.properties ?? {}) as Record<string, { pattern?: string; items?: { pattern?: string } }>;
+        type IdSchema = { type?: string; pattern?: string; items?: { pattern?: string } };
+        const props = (t.inputSchema.properties ?? {}) as Record<string, IdSchema & { anyOf?: IdSchema[] }>;
         for (const [name, schema] of Object.entries(props)) {
           if (!/_ids?$/.test(name) || name === 'client_id') continue;
           seen.push(`${t.name}.${name}`);
-          expect(schema.pattern ?? schema.items?.pattern, `${t.name}.${name}`).toBe(ID_PATTERN.source);
+          // An id that null clears (update_memory) is "an id or null": everything but the null carries the pattern.
+          const values = schema.anyOf ? schema.anyOf.filter((s) => s.type !== 'null') : [schema];
+          expect(values.length, `${t.name}.${name}`).toBeGreaterThan(0);
+          for (const s of values) expect(s.pattern ?? s.items?.pattern, `${t.name}.${name}`).toBe(ID_PATTERN.source);
         }
       }
       // Spot-check that the walk found the path-building ones.
@@ -1007,6 +1201,12 @@ describe('security report #295', () => {
           'mark_read.message_ids',
           'ack_message.lease_id',
           'get_identity_token.inbox_id',
+          'forget.memory_id',
+          'update_memory.memory_id',
+          'update_memory.contact_id',
+          'remember.message_id',
+          'recall.thread_id',
+          'list_memories.inbox_id',
         ]),
       );
     });
@@ -1024,6 +1224,12 @@ describe('security report #295', () => {
         ['mark_read', (bad) => ({ message_ids: ['msg_1', bad] })],
         ['ack_message', (bad) => ({ message_id: bad, lease_id: 'lease_1' })],
         ['get_identity_token', (bad) => ({ inbox_id: bad, audience: 'abxc_app' })],
+        ['forget', (bad) => ({ memory_id: bad })],
+        ['update_memory', (bad) => ({ memory_id: bad, content: 'x' })],
+        ['update_memory', (bad) => ({ memory_id: 'mem_1', contact_id: bad })],
+        ['remember', (bad) => ({ content: 'x', thread_id: bad })],
+        ['recall', (bad) => ({ query: 'x', inbox_id: bad })],
+        ['list_memories', (bad) => ({ contact_id: bad })],
       ];
       for (const [tool, args] of calls) {
         for (const bad of HOSTILE) {

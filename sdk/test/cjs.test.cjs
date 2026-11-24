@@ -10,6 +10,7 @@ test('require() returns the CommonJS build with every export', () => {
   assert.equal(typeof sdk.verifyWebhook, 'function');
   assert.equal(typeof sdk.EventStream, 'function');
   assert.equal(typeof sdk.StreamClosedError, 'function');
+  assert.equal(typeof sdk.StreamOverflowError, 'function');
   assert.equal(sdk.DEFAULT_BASE_URL, 'https://api.agentboxd.com');
   assert.match(require.resolve('agentboxd'), /dist[\\/]cjs[\\/]index\.js$/);
 });

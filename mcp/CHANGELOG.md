@@ -3,6 +3,33 @@
 All notable changes to `@agentboxd/mcp`. This project follows [Semantic Versioning](https://semver.org/);
 while the version is 0.x, minor releases may contain breaking changes, which are always listed here.
 
+## 0.3.1 (2026-11-24)
+
+- Agent memory and recall: five tools, placed after `search_knowledge`. 61 tools in total (60 on the hosted server).
+  The MCPB manifest and the stdio smoke test list them too. They need the `memory:read` and `memory:write`
+  permissions.
+- `remember` (`{ content, inbox_id?, key?, tags?, contact_id?, thread_id?, message_id?, ttl_seconds? }`) saves a
+  memory: a note of up to 8,000 characters for one inbox, or for the whole workspace without `inbox_id`. Saving under
+  a `key` that exists in the same place replaces that memory. The result has the memory and `similar` (other memories
+  that say nearly the same), with a note to keep one of them.
+- `recall` (`{ query, inbox_id?, sources?, limit?, mode?, tags?, contact_id?, thread_id?, since?, until?,
+  min_similarity? }`, read-only) asks one question over memories, knowledge docs and past mail, by meaning and by
+  keyword. Each result has `source`, `text`, `score`, `similarity`, `matched` and `untrusted`; the result starts with
+  the untrusted-content line, since it carries passages of received mail. A note says when search by meaning was not
+  available and the answer is by keyword only.
+- `list_memories` (`{ inbox_id?, key?, tag?, contact_id?, thread_id?, limit?, cursor? }`, read-only) lists saved
+  memories, newest first. Its result starts with the untrusted-content line: a memory may have been written from an
+  email.
+- `update_memory` (`{ memory_id, content?, key?, tags?, inbox_id?, contact_id?, thread_id?, message_id?, expires_at?,
+  ttl_seconds? }`) changes a memory; `null` clears `key`, `contact_id`, `thread_id`, `message_id` or `expires_at`,
+  and `inbox_id: null` moves it to the whole workspace.
+- `forget` (`{ memory_id }`) deletes a memory, when the user asks or when it is wrong or out of date.
+- `send_email`, `reply_to_email`, `reply_to_message` and `forward_email` take `reply_to`: where replies should go
+  (the Reply-To header), if not to this inbox. One address, `"Name <addr@x.com>"` allowed; it is not a recipient.
+  A message that has one shows it as `reply_to`.
+- Server instructions: the contact tools are now under "Contacts", and a new "Memory" line says when to use
+  `recall`, `remember`, `list_memories`, `update_memory` and `forget`.
+
 ## 0.3.0 (2026-11-07)
 
 - Tool arguments that are ids (`inbox_id`, `message_id`, `thread_id`, `draft_id`, `attachment_id`, `contact_id`,

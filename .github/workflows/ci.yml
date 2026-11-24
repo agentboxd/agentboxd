@@ -24,6 +24,7 @@ jobs:
         run: npm audit --omit=dev --audit-level=high && (npm audit || true)
       - run: npm run typecheck
       - run: npm run build
+      # Reads the shared signature vectors in ../test/fixtures/agent-messages (sdk-python/tests reads them too).
       - run: npm test
       - run: npm pack --dry-run
 

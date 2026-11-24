@@ -15,6 +15,8 @@ from ._types import (
     MessageType,
     MetadataValue,
     MetricsBucket,
+    RecallMode,
+    RecallSource,
     WebhookEventType,
     WebhookPayload,
 )
@@ -66,9 +68,9 @@ class Request:
 
 
 def _seg(value: str) -> str:
-    """One path segment: "/" is escaped, and "." and ".." are refused (URLs resolve them to another route)."""
+    """One path segment: "/" is escaped; "", "." and ".." are refused (they would reach another route)."""
     text = str(value)
-    if text in (".", ".."):
+    if text in ("", ".", ".."):
         raise ValueError(f"{text!r} is not a valid id")
     return quote(text, safe="")
 
@@ -370,6 +372,7 @@ def message_send(
     data: Any = None,
     type: Optional[MessageType] = None,
     agent_signature: Optional[str] = None,
+    reply_to: Optional[str] = None,
 ) -> Request:
     body = _body(
         {
@@ -384,6 +387,7 @@ def message_send(
             "data": data,
             "type": type,
             "agent_signature": agent_signature,
+            "reply_to": reply_to,
         }
     )
     return Request(
@@ -403,6 +407,7 @@ def message_reply(
     data: Any = None,
     type: Optional[MessageType] = None,
     agent_signature: Optional[str] = None,
+    reply_to: Optional[str] = None,
 ) -> Request:
     body = _body(
         {
@@ -414,6 +419,7 @@ def message_reply(
             "data": data,
             "type": type,
             "agent_signature": agent_signature,
+            "reply_to": reply_to,
         }
     )
     return Request(
@@ -1038,6 +1044,7 @@ def message_forward(
     include_attachments: Optional[bool],
     labels: Optional[Sequence[str]],
     idempotency_key: Optional[str],
+    reply_to: Optional[str] = None,
 ) -> Request:
     body = _body(
         {
@@ -1048,6 +1055,7 @@ def message_forward(
             "html": html,
             "include_attachments": include_attachments,
             "labels": _list(labels),
+            "reply_to": reply_to,
         }
     )
     return Request(
@@ -1206,6 +1214,127 @@ def knowledge_search(q: str, inbox_id: Optional[str], limit: Optional[int]) -> R
     return Request(
         "GET", "/v1/knowledge/search", params=_query({"q": q, "inbox_id": inbox_id, "limit": limit})
     )
+
+
+# ---------- memory ----------
+
+
+def memories_list(
+    inbox_id: Optional[str],
+    key: Optional[str],
+    tag: Optional[str],
+    contact_id: Optional[str],
+    thread_id: Optional[str],
+    cursor: Optional[str],
+    limit: Optional[int],
+) -> Request:
+    params = _query(
+        {
+            "inbox_id": inbox_id,
+            "key": key,
+            "tag": tag,
+            "contact_id": contact_id,
+            "thread_id": thread_id,
+            "cursor": cursor,
+            "limit": limit,
+        }
+    )
+    return Request("GET", "/v1/memories", params=params)
+
+
+def memories_create(
+    content: str,
+    inbox_id: Optional[str],
+    key: Optional[str],
+    tags: Optional[Sequence[str]],
+    contact_id: Optional[str],
+    thread_id: Optional[str],
+    message_id: Optional[str],
+    expires_at: Optional[str],
+    ttl_seconds: Optional[int],
+) -> Request:
+    body = _body(
+        {
+            "content": content,
+            "inbox_id": inbox_id,
+            "key": key,
+            "tags": _list(tags),
+            "contact_id": contact_id,
+            "thread_id": thread_id,
+            "message_id": message_id,
+            "expires_at": expires_at,
+            "ttl_seconds": ttl_seconds,
+        }
+    )
+    return Request("POST", "/v1/memories", json=body)
+
+
+def memories_get(memory_id: str) -> Request:
+    return Request("GET", f"/v1/memories/{_seg(memory_id)}")
+
+
+def memories_update(
+    memory_id: str,
+    content: Optional[str],
+    inbox_id: Nullable,
+    key: Nullable,
+    tags: Optional[Sequence[str]],
+    contact_id: Nullable,
+    thread_id: Nullable,
+    message_id: Nullable,
+    expires_at: Nullable,
+    ttl_seconds: Optional[int],
+) -> Request:
+    body = _patch(
+        {
+            "content": content,
+            "inbox_id": inbox_id,
+            "key": key,
+            "tags": _list(tags),
+            "contact_id": contact_id,
+            "thread_id": thread_id,
+            "message_id": message_id,
+            "expires_at": expires_at,
+            "ttl_seconds": ttl_seconds,
+        },
+        nullable=("inbox_id", "key", "contact_id", "thread_id", "message_id", "expires_at"),
+    )
+    return Request("PATCH", f"/v1/memories/{_seg(memory_id)}", json=body)
+
+
+def memories_delete(memory_id: str) -> Request:
+    return Request("DELETE", f"/v1/memories/{_seg(memory_id)}")
+
+
+def recall(
+    query: str,
+    inbox_id: Optional[str],
+    sources: Optional[Sequence[RecallSource]],
+    limit: Optional[int],
+    mode: Optional[RecallMode],
+    tags: Optional[Sequence[str]],
+    contact_id: Optional[str],
+    thread_id: Optional[str],
+    since: Optional[str],
+    until: Optional[str],
+    min_similarity: Optional[float],
+) -> Request:
+    body = _body(
+        {
+            "query": query,
+            "inbox_id": inbox_id,
+            "sources": _list(sources),
+            "limit": limit,
+            "mode": mode,
+            "tags": _list(tags),
+            "contact_id": contact_id,
+            "thread_id": thread_id,
+            "since": since,
+            "until": until,
+            "min_similarity": min_similarity,
+        }
+    )
+    return Request("POST", "/v1/recall", json=body)
 
 
 def search(

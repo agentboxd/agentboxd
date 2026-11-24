@@ -4,7 +4,7 @@ Guide: https://agentboxd.com/guides/n8n-email-automation
 
 | File | What |
 |---|---|
-| `inbound-reply.workflow.json` | Webhook trigger (raw body) → Code node that verifies the `X-Mailroom-Signature` HMAC, skips withheld content, messages it already handled, and spoofed or automatic mail → HTTP Request that replies in the thread. |
+| `inbound-reply.workflow.json` | Webhook trigger (raw body) → Code node that verifies the `X-Mailroom-Signature` HMAC, skips withheld content, messages it already handled, mail that failed SPF or DMARC, suspicious or automatic mail, replies in an existing thread, and mail whose Reply-To is another address than the From → HTTP Request that replies in the thread with a fixed text. |
 | `send-and-wait.workflow.json` | Manual trigger → get-or-create an inbox (`client_id`) → send an email → long-poll `/messages/wait` for the answer. |
 | `verify-and-filter.js` | The Code node's source, readable on its own. |
 | `workflows.ts` | Builds both workflow files from that source (`--check` verifies them). |
